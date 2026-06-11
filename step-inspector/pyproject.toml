@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "step-inspector"
+version = "0.1.0"
+description = "Audit-grade desktop GUI viewer for STEP (ISO 10303-21) files: geometry, full entity listing, and byte-accounted orphaned-data review for proprietary information."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["STEP", "ISO 10303", "p21", "CAD", "audit", "viewer"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Manufacturing",
+    "Topic :: Scientific/Engineering :: Computer Aided Design (CAD)",
+    "Programming Language :: Python :: 3",
+]
+
+[project.optional-dependencies]
+steptools = ["steptools"]
+
+[project.gui-scripts]
+step-inspector = "step_inspector.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["step_inspector*"]

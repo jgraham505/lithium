@@ -1,0 +1,136 @@
+# STEP Inspector
+
+A desktop GUI application for **auditing STEP files (ISO 10303-21, `.step`/`.stp`/`.p21`)
+for proprietary information** — without having to read them as raw text.
+
+It shows the geometry, lists every entity and attribute, and — the core
+feature — **proves that every byte of the file was read**. Anything that is
+*not* consumed into the structured data model (comments, stray text, data
+after the end marker, unparseable records) is presented as **orphaned data**
+for human review.
+
+![Geometry view](docs/geometry.png)
+
+## Why
+
+STEP files routinely leave a company's walls — sent to suppliers, customers,
+and contract manufacturers. Besides the part geometry they can carry author
+names, organization names, internal system identifiers, comments, custom
+records, and free-text properties. Reviewing that by eyeballing a text file
+is error-prone: it's easy to miss a comment or a non-standard record.
+
+STEP Inspector turns the review into a checklist:
+
+1. **Byte accounting.** The audit parser classifies the file into spans
+   (entities, header, structure markers, comments, whitespace, orphaned) and
+   verifies the spans **tile the file exactly** — no gaps, no overlaps. The
+   green/orange banner tells you at a glance whether everything was read and
+   what still needs eyes.
+2. **Orphaned data.** Comments, unrecognized statements, text outside
+   sections, anything after `END-ISO-10303-21`, unterminated constructs —
+   all listed with line numbers and full text.
+3. **Everything searchable.** Every entity with parsed attributes, every
+   string literal in the file (with `\X2\…` escape sequences decoded),
+   header metadata (author, organization, originating system, …).
+4. **Second reader.** When available, the file is *also* read with the
+   official [`steptools`](https://pypi.org/project/steptools/) library
+   (STEP Tools, Inc.) and the two entity sets are cross-checked — extra
+   confidence that the audit parser didn't miss an instance.
+
+## Screenshots
+
+| Overview & coverage proof | Entities browser |
+|---|---|
+| ![Overview](docs/overview.png) | ![Entities](docs/entities.png) |
+
+| Color-coded file audit | Comments & orphaned data |
+|---|---|
+| ![Audit](docs/audit.png) | ![Review](docs/review.png) |
+
+## The tabs
+
+* **Overview** — file metadata, byte-accounting table, header fields
+  (name, time stamp, author, organization, preprocessor, originating system,
+  authorization), entity inventory, steptools cross-check result.
+* **Entities** — all instances grouped by type. Selecting one shows parsed
+  attributes (double-click any `#ref` to follow it), reverse references
+  ("referenced by"), the raw source text, and the steptools EXPRESS/ARM view.
+* **Geometry** — dependency-free 3D wireframe viewer: B-rep edges (lines,
+  circles, ellipses, B-splines, trimmed curves), polylines, tessellated
+  meshes, vertices and free points. Drag to rotate, right-drag to pan,
+  wheel to zoom. Curves the viewer can't evaluate are still drawn (as
+  dashed chords) and counted — nothing is silently dropped.
+* **File audit** — the complete file with a line-number gutter, colored by
+  classification. "Next review item" cycles through comments and orphans.
+  Double-click an entity line to open it in the Entities tab.
+* **Comments & orphans** — the review queue: every comment, every orphaned
+  span, plus warnings (unparseable parameters, dangling references,
+  non-standard header records, non-ASCII bytes, …). Double-click jumps to
+  the spot in the file.
+* **Strings** — every string literal in the file in one searchable table;
+  strings whose escape sequences couldn't be fully decoded are flagged with
+  their raw form.
+
+`File ▸ Export audit report…` writes the whole audit (coverage proof,
+inventory, review items, orphan text, all strings) to a text file.
+
+## Install & run
+
+Requires Python 3.10+ with Tkinter (on Debian/Ubuntu: `apt install python3-tk`).
+
+```sh
+pip install steptools        # optional second reader (see note below)
+python -m step_inspector [path/to/file.step]
+```
+
+or install the package, which adds a `step-inspector` command:
+
+```sh
+pip install .
+step-inspector path/to/file.step
+```
+
+### Headless report (CI / scripting)
+
+```sh
+python -m step_inspector --report file.step > file.audit.txt
+```
+
+Exit code is `2` if byte-coverage verification fails, `0` otherwise.
+
+### About the steptools second reader
+
+The `steptools` package is proprietary (STEP Tools, Inc.) and its read API
+requires a license key — free keys are issued at
+[steptools.com](https://www.steptools.com/). Set the key string in the
+`STEPTOOLS_LICENSE` environment variable. **Without it the application is
+fully functional**: the audit parser, geometry, and all review features are
+independent; only the cross-check panel reports that the second reader is
+unavailable. You can also skip it explicitly with `--no-steptools`.
+
+## Demo file
+
+`samples/cube_demo.step` (regenerate with `python samples/make_sample.py`)
+is a structurally complete AP214 cube that deliberately contains the things
+this tool exists to catch: comments with sensitive-looking text, an
+`\X2\`-encoded string, free-text properties, a non-standard record inside
+`DATA`, and trailing text after the end marker.
+
+## Tests
+
+```sh
+python -m unittest discover -s tests -v
+```
+
+## Limitations
+
+* The geometry view is a review aid, not a CAD kernel: surfaces are shown by
+  their edge wireframes, and assembly placement transforms are not applied
+  (each part renders in its local frame).
+* Part 21 edition-3 sections (`ANCHOR`/`REFERENCE`/`SIGNATURE`) are read and
+  surfaced for review rather than interpreted.
+
+## License
+
+MIT — see [LICENSE](LICENSE). The optional `steptools` library has its own
+proprietary license terms.
