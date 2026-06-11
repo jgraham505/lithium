@@ -37,6 +37,37 @@ STEP Inspector turns the review into a checklist:
    (STEP Tools, Inc.) and the two entity sets are cross-checked — extra
    confidence that the audit parser didn't miss an instance.
 
+## AP242, PMI and GD&T
+
+The audit layer is schema-agnostic: any ISO 10303-21 file is fully
+byte-accounted regardless of AP (203/214/224/238/242 …), including Part 21
+edition-3 constructs (`ANCHOR`/`REFERENCE`/`SIGNATURE` sections are read
+and surfaced for review).
+
+For files that carry extra product information — AP242 MBD in particular —
+the **PMI / GD&T tab** presents it in readable form:
+
+* **Geometric tolerances** — type (flatness, position, …), magnitude with
+  units, the toleranced feature, resolved **datum reference letters**, and
+  modifiers; both simple and complex-instance forms are handled.
+* **Dimensions** — dimensional size/location with nominal values and
+  plus/minus tolerance ranges.
+* **Datums** — datum letters, datum features, datum targets.
+* **Annotations & 3D text** — `TEXT_LITERAL`/composite text content (where
+  free-text PMI notes live), annotation occurrences, draughting callouts.
+* **Saved views** — cameras and presentation/draughting models.
+* **Notes & properties** — descriptive items, property definitions,
+  surface texture.
+
+Consistent with the audit philosophy, the extractor never hides anything:
+any PMI-related entity it cannot interpret is listed under **"Other
+PMI-related items"** with its text content, flagged for review — and every
+instance is always visible in the Entities tab and the triage map.
+Tessellated PMI presentation (`TESSELLATED_CURVE_SET` leaders/frames and
+triangulated sets) is rendered in the Geometry tab.
+
+![PMI / GD&T tab](docs/pmi.png)
+
 ## Screenshots
 
 | Overview & coverage proof | Entities browser |
@@ -57,9 +88,12 @@ STEP Inspector turns the review into a checklist:
   ("referenced by"), the raw source text, and the steptools EXPRESS/ARM view.
 * **Geometry** — dependency-free 3D wireframe viewer: B-rep edges (lines,
   circles, ellipses, B-splines, trimmed curves), polylines, tessellated
-  meshes, vertices and free points. Drag to rotate, right-drag to pan,
+  meshes and curve sets (AP242 tessellated PMI), vertices and free points. Drag to rotate, right-drag to pan,
   wheel to zoom. Curves the viewer can't evaluate are still drawn (as
   dashed chords) and counted — nothing is silently dropped.
+* **PMI / GD&T** — geometric tolerances, dimensions, datums, annotation
+  text, saved views, and notes/properties in readable form (see
+  [AP242, PMI and GD&T](#ap242-pmi-and-gdt)).
 * **File audit** — the complete file with a line-number gutter, colored by
   classification. "Next review item" cycles through comments and orphans.
   Double-click an entity line to open it in the Entities tab.

@@ -11,6 +11,7 @@ import tkinter as tk
 
 from .. import steptools_bridge as sb
 from ..geometry import extract_wireframe
+from ..pmi import CATEGORIES as PMI_CATEGORIES, extract_pmi
 from ..parser import (AuditResult, Entity, Kind, Ref, Str, Typed,
                       audit_file, format_value)
 from ..report import build_report, coverage_summary
@@ -47,6 +48,7 @@ class InspectorApp(tk.Tk):
         self.res: AuditResult | None = None
         self.stinfo: sb.SteptoolsInfo | None = None
         self.wire = None
+        self.pmi = None
         self._build_menu()
         self._build_layout()
         if path:
@@ -88,12 +90,14 @@ class InspectorApp(tk.Tk):
         self.tab_overview = OverviewTab(self.nb, self)
         self.tab_entities = EntitiesTab(self.nb, self)
         self.tab_geometry = GeometryTab(self.nb, self)
+        self.tab_pmi = PMITab(self.nb, self)
         self.tab_audit = AuditTab(self.nb, self)
         self.tab_review = ReviewTab(self.nb, self)
         self.tab_strings = StringsTab(self.nb, self)
         self.nb.add(self.tab_overview, text=" Overview ")
         self.nb.add(self.tab_entities, text=" Entities ")
         self.nb.add(self.tab_geometry, text=" Geometry ")
+        self.nb.add(self.tab_pmi, text=" PMI / GD&T ")
         self.nb.add(self.tab_audit, text=" File audit ")
         self.nb.add(self.tab_review, text=" Comments & orphans ")
         self.nb.add(self.tab_strings, text=" Strings ")
@@ -132,12 +136,13 @@ class InspectorApp(tk.Tk):
             try:
                 res = audit_file(path)
                 wire = extract_wireframe(res)
+                pmi = extract_pmi(res)
                 st = sb.load(path) if self.use_steptools else None
             except Exception:
                 err = traceback.format_exc()
                 self.after(0, lambda: self._load_failed(path, err))
                 return
-            self.after(0, lambda: self._loaded(res, wire, st))
+            self.after(0, lambda: self._loaded(res, wire, pmi, st))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -146,9 +151,10 @@ class InspectorApp(tk.Tk):
         self.lbl_file.config(text=os.path.basename(path))
         messagebox.showerror(APP_TITLE, f"Could not read {path}:\n\n{err}")
 
-    def _loaded(self, res: AuditResult, wire, st):
+    def _loaded(self, res: AuditResult, wire, pmi, st):
         self.res = res
         self.wire = wire
+        self.pmi = pmi
         self.stinfo = st
         nrev = len([a for a in res.attention
                     if a.severity in ("orphan", "comment")])
@@ -173,7 +179,8 @@ class InspectorApp(tk.Tk):
             self.lbl_cov.config(text="✓ every byte read and consumed",
                                 bg="#2e7d32", fg="white")
         for tab in (self.tab_overview, self.tab_entities, self.tab_geometry,
-                    self.tab_audit, self.tab_review, self.tab_strings):
+                    self.tab_pmi, self.tab_audit, self.tab_review,
+                    self.tab_strings):
             tab.populate()
         self.status.config(
             text=f"Loaded. {nrev} item(s) flagged for proprietary-information"
@@ -618,6 +625,74 @@ class GeometryTab(ttk.Frame):
                 if approx else "")
         self.stats.config(text=", ".join(parts) + note if parts
                           else "no wireframe geometry found")
+
+
+# ---------------------------------------------------------------------------
+# PMI / GD&T tab
+# ---------------------------------------------------------------------------
+
+class PMITab(ttk.Frame):
+    def __init__(self, master, app: InspectorApp):
+        super().__init__(master)
+        self.app = app
+        top = ttk.Label(self, padding=6, wraplength=1100, justify="left",
+                        text=("Product Manufacturing Information found in the "
+                              "file: geometric tolerances, dimensions, datums, "
+                              "annotation text, saved views, and free-text "
+                              "properties (AP242/AP214). Items the extractor "
+                              "could not interpret are still listed under "
+                              "'Other PMI-related items' — nothing is hidden. "
+                              "Double-click an item to open it in the "
+                              "Entities tab."))
+        top.pack(fill="x")
+        self.tree = ttk.Treeview(self, show="tree", selectmode="browse")
+        ys = ttk.Scrollbar(self, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=ys.set)
+        ys.pack(side="right", fill="y")
+        self.tree.pack(fill="both", expand=True)
+        self.tree.tag_configure("cat", font=("TkDefaultFont", 10, "bold"))
+        self.tree.tag_configure("uninterp", foreground="#8a4baf")
+        self.tree.bind("<Double-1>", self._open_entity)
+        self.footer = ttk.Label(self, padding=(8, 4), anchor="w")
+        self.footer.pack(fill="x", side="bottom")
+
+    def populate(self):
+        self.tree.delete(*self.tree.get_children())
+        m = self.app.pmi
+        if m is None:
+            return
+        if m.empty:
+            self.tree.insert("", "end", tags=("cat",),
+                             text="No PMI / GD&T content found in this file.")
+            self.footer.config(text="")
+            return
+        for key, label in PMI_CATEGORIES:
+            items = m.categories.get(key, [])
+            if not items:
+                continue
+            node = self.tree.insert("", "end", open=True, tags=("cat",),
+                                    text=f"{label}  ({len(items)})")
+            for it in items:
+                text = f"#{it.eid}   {it.label}"
+                if it.detail:
+                    text += f"   —   {it.detail}"
+                tags = ("item", str(it.eid))
+                if not it.interpreted:
+                    tags += ("uninterp",)
+                self.tree.insert(node, "end", text=text, tags=tags)
+        note = (f"{m.total} PMI item(s)."
+                f"   Presentation/style machinery not shown here: "
+                f"{m.style_count} instance(s)"
+                + (f" ({', '.join(f'{n}×{c}' for n, c in m.style_types.most_common(4))})"
+                   if m.style_count else "")
+                + ".   All instances remain visible in the Entities tab.")
+        self.footer.config(text=note)
+
+    def _open_entity(self, _ev):
+        node = self.tree.focus()
+        tags = self.tree.item(node, "tags")
+        if tags and tags[0] == "item":
+            self.app.goto_entity(int(tags[1]))
 
 
 # ---------------------------------------------------------------------------
