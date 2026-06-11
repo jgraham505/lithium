@@ -71,8 +71,14 @@ STEP Inspector turns the review into a checklist:
   strings whose escape sequences couldn't be fully decoded are flagged with
   their raw form.
 
-`File ▸ Export audit report…` writes the whole audit (coverage proof,
-inventory, review items, orphan text, all strings) to a text file.
+`File ▸ Export audit report…` writes the whole audit to a text file:
+coverage proof, inventory, review items, orphan text, all strings, and a
+**triage map** — one row per classified span showing its byte range,
+line number(s), category, identity, and where it was triaged to
+(consumed into the data model / header / structure, or *not* consumed and
+sent to the review queue). The map ends with a byte total that must equal
+the file size, so the report itself is auditable. Omit the map for very
+large files with `--no-map` in CLI mode.
 
 ## Install & run
 

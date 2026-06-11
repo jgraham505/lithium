@@ -232,6 +232,24 @@ class TestReport(unittest.TestCase):
             self.assertIn(needle, rpt)
         self.assertIn("CUSTOM_TOOL_STATE", rpt)
 
+    def test_triage_map_complete_and_optional(self):
+        from step_inspector.parser import Kind
+        from step_inspector.report import build_report
+        res = audit_file(SAMPLE)
+        rpt = build_report(res)
+        self.assertIn("TRIAGE MAP", rpt)
+        self.assertIn("✓ complete", rpt)
+        # one row per non-whitespace span
+        map_section = rpt.split("TRIAGE MAP")[1].split("ALL TEXT STRINGS")[0]
+        rows = [l for l in map_section.splitlines() if " -> " in l]
+        expected = sum(1 for s in res.spans if s.kind is not Kind.WHITESPACE)
+        self.assertEqual(len(rows), expected)
+        # orphans and comments are marked as not consumed
+        self.assertIn("NOT consumed — ORPHANED", map_section)
+        self.assertIn("NOT consumed — review queue", map_section)
+        # map can be omitted for very large files
+        self.assertNotIn("TRIAGE MAP", build_report(res, include_map=False))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

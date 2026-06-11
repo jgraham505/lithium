@@ -18,6 +18,9 @@ def main(argv=None) -> int:
                          "of opening the GUI (requires FILE)")
     ap.add_argument("--no-steptools", action="store_true",
                     help="skip the steptools second-reader cross-check")
+    ap.add_argument("--no-map", action="store_true",
+                    help="omit the span-by-span triage map from --report "
+                         "output (keeps reports short for very large files)")
     args = ap.parse_args(argv)
 
     if args.report:
@@ -28,7 +31,7 @@ def main(argv=None) -> int:
         from . import steptools_bridge as sb
         res = audit_file(args.file)
         st = None if args.no_steptools else sb.load(args.file)
-        sys.stdout.write(build_report(res, st))
+        sys.stdout.write(build_report(res, st, include_map=not args.no_map))
         return 0 if res.verify_coverage() else 2
 
     from .gui.app import run
