@@ -5,10 +5,20 @@ from __future__ import annotations
 import datetime
 from collections import Counter
 
-from .parser import AuditResult, Kind, format_value
+from .parser import AuditResult, HeaderEntity, Kind, format_value
 from .steptools_bridge import SteptoolsInfo, cross_check
 
 RULE = "=" * 72
+
+#: Where each span category is surfaced in the application.
+KIND_DESTINATION = {
+    Kind.ENTITY: "consumed: data model (Entities tab)",
+    Kind.HEADER: "consumed: header metadata (Overview tab)",
+    Kind.STRUCTURE: "consumed: file structure",
+    Kind.COMMENT: "NOT consumed — review queue (Comments & orphans tab)",
+    Kind.ORPHAN: "NOT consumed — ORPHANED, review queue",
+    Kind.WHITESPACE: "formatting only",
+}
 
 
 def coverage_summary(res: AuditResult) -> list:
@@ -29,7 +39,30 @@ def coverage_summary(res: AuditResult) -> list:
     return rows
 
 
-def build_report(res: AuditResult, st: SteptoolsInfo | None = None) -> str:
+def _map_row(res: AuditResult, s) -> str:
+    """One triage-map line: byte range, line(s), category, identity, fate."""
+    l1 = res.line_of(s.start)
+    l2 = res.line_of(max(s.end - 1, s.start))
+    lines = f"line {l1}" if l1 == l2 else f"lines {l1}-{l2}"
+    if s.kind is Kind.ENTITY and s.ref is not None:
+        what = f"#{s.ref.eid} {s.ref.type_name}"
+        if s.ref.parse_error:
+            what += "  [params unparsed — flagged]"
+    elif s.kind is Kind.HEADER and isinstance(s.ref, HeaderEntity):
+        what = s.ref.type_name
+    elif s.kind is Kind.COMMENT:
+        text = (s.ref or "").strip().replace("\n", " ")
+        what = f"comment: {text[:60]!r}"
+    elif s.kind is Kind.ORPHAN:
+        what = s.note
+    else:
+        what = s.note
+    return (f"{s.start:>9}-{s.end:<9} {lines:<16} {s.kind.value:<10} "
+            f"{what:<46} -> {KIND_DESTINATION[s.kind]}")
+
+
+def build_report(res: AuditResult, st: SteptoolsInfo | None = None,
+                 include_map: bool = True) -> str:
     out: list[str] = []
     w = out.append
     w(RULE)
@@ -113,6 +146,28 @@ def build_report(res: AuditResult, st: SteptoolsInfo | None = None) -> str:
             w(f"  -- line {res.line_of(s.start)} ({s.note}) " + "-" * 20)
             for line in s.text(res.source).splitlines():
                 w(f"  | {line}")
+
+    # ---- triage map -----------------------------------------------------------
+    if include_map:
+        w("")
+        w("TRIAGE MAP — where every byte of the file went")
+        w("  Byte offsets are 0-based, end-exclusive.  Whitespace spans are")
+        w("  omitted as rows; together with the listed spans they tile the")
+        w("  file with no gaps (see the totals below the map).")
+        ws_spans = ws_bytes = 0
+        for s in res.spans:
+            if s.kind is Kind.WHITESPACE:
+                ws_spans += 1
+                ws_bytes += s.end - s.start
+                continue
+            w("  " + _map_row(res, s))
+        w(f"  (whitespace omitted: {ws_spans} span(s), {ws_bytes} bytes)")
+        listed = sum(s.end - s.start for s in res.spans
+                     if s.kind is not Kind.WHITESPACE)
+        w(f"  listed {listed} bytes + whitespace {ws_bytes} bytes = "
+          f"{listed + ws_bytes} of {res.total_bytes} file bytes"
+          + ("  ✓ complete" if listed + ws_bytes == res.total_bytes
+             else "  ✗ INCOMPLETE"))
 
     # ---- strings ------------------------------------------------------------------
     w("")
