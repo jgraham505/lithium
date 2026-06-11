@@ -139,6 +139,56 @@ prop_rep = e(f"REPRESENTATION('material',({descr}),{ctx})")
 prop = e(f"PROPERTY_DEFINITION('material spec','internal use only',{pds})")
 e(f"PROPERTY_DEFINITION_REPRESENTATION({prop},{prop_rep})")
 
+# --- PMI / GD&T block (AP242-style semantic + tessellated presentation) -------
+lines.append("/* PMI: GD&T per ASME Y14.5, datum scheme from ACME-QA-201"
+             " (uncontrolled copy) */")
+mm = uncert_unit
+
+# datums A (bottom face) and B (front face)
+df_a = e(f"DATUM_FEATURE('bottom face','',{pds},.T.)")
+datum_a = e(f"DATUM('','',{pds},.F.,'A')")
+e(f"SHAPE_ASPECT_RELATIONSHIP('','datum A link',{df_a},{datum_a})")
+df_b = e(f"DATUM_FEATURE('front face','',{pds},.T.)")
+datum_b = e(f"DATUM('','',{pds},.F.,'B')")
+e(f"SHAPE_ASPECT_RELATIONSHIP('','datum B link',{df_b},{datum_b})")
+
+# flatness 0.05 on the top face
+sa_top = e(f"SHAPE_ASPECT('top mating face','',{pds},.T.)")
+mag_fl = e(f"LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(0.05),{mm})")
+e(f"FLATNESS_TOLERANCE('FL1','flatness of mating face',{mag_fl},{sa_top})")
+
+# position 0.2 |A|B| on the datum circle (complex-instance form)
+sa_d1 = e(f"SHAPE_ASPECT('datum circle D1','',{pds},.T.)")
+mag_pos = e(f"LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(0.2),{mm})")
+dr_a = e(f"DATUM_REFERENCE(1,{datum_a})")
+dr_b = e(f"DATUM_REFERENCE(2,{datum_b})")
+e(f"(GEOMETRIC_TOLERANCE('POS1','position of D1',{mag_pos},{sa_d1})"
+  f"GEOMETRIC_TOLERANCE_WITH_DATUM_REFERENCE(({dr_a},{dr_b}))"
+  f"POSITION_TOLERANCE())")
+
+# overall width 40 mm +0.1/-0.1
+sa_w = e(f"SHAPE_ASPECT('overall width','',{pds},.T.)")
+dim_w = e(f"DIMENSIONAL_SIZE({sa_w},'width')")
+mri = e(f"MEASURE_REPRESENTATION_ITEM('nominal value',"
+        f"LENGTH_MEASURE(40.0),{mm})")
+sdr = e(f"SHAPE_DIMENSION_REPRESENTATION('',({mri}),{ctx})")
+e(f"DIMENSIONAL_CHARACTERISTIC_REPRESENTATION({dim_w},{sdr})")
+pm_lo = e(f"LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(-0.1),{mm})")
+pm_hi = e(f"LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(0.1),{mm})")
+tol_v = e(f"TOLERANCE_VALUE({pm_lo},{pm_hi})")
+e(f"PLUS_MINUS_TOLERANCE({tol_v},{dim_w})")
+
+# annotation text + tessellated leader polyline + saved view
+font = e("PRE_DEFINED_TEXT_FONT('simplex')")
+tl = e(f"TEXT_LITERAL('note 1','CRITICAL MATING FACE - lap to ACME-QA-201',"
+       f"{world_ax},'centre',.UP.,{font})")
+ann = e(f"ANNOTATION_OCCURRENCE('PMI note',(),{tl})")
+cpl = e("CARTESIAN_POINT_LIST_3D('',((44.0,44.0,50.0),(40.0,40.0,50.0),"
+        "(30.0,30.0,48.0)))")
+tcs = e(f"TESSELLATED_CURVE_SET('leader line',{cpl},((1,2,3)))")
+cam = e(f"CAMERA_MODEL_D3('Default PMI view',{world_ax},$)")
+e(f"DRAUGHTING_MODEL('MBD view: tolerances',({cam},{ann},{tcs}),{ctx})")
+
 data_section = "\n".join(lines)
 
 header = """ISO-10303-21;

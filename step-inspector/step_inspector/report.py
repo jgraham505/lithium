@@ -103,6 +103,28 @@ def build_report(res: AuditResult, st: SteptoolsInfo | None = None,
     for name, n in counts.most_common():
         w(f"    {n:>6}  {name}")
 
+    # ---- PMI / GD&T -------------------------------------------------------------
+    from .pmi import CATEGORIES, extract_pmi
+    pmi = extract_pmi(res)
+    w("")
+    w("PMI / GD&T")
+    if pmi.empty:
+        w("  no PMI / GD&T content found")
+    else:
+        for key, label in CATEGORIES:
+            items = pmi.categories.get(key, [])
+            if not items:
+                continue
+            w(f"  {label} ({len(items)})")
+            for it in items:
+                flag = "" if it.interpreted else "  [not interpreted — review]"
+                w(f"    #{it.eid:<6} {it.label}{flag}")
+                if it.detail:
+                    w(f"           {it.detail}")
+        if pmi.style_count:
+            w(f"  Presentation/style machinery: {pmi.style_count} "
+              "instance(s) (see entity inventory)")
+
     # ---- steptools cross-check -------------------------------------------------
     w("")
     w("SECOND READER (steptools library)")

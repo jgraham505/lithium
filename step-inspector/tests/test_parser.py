@@ -86,7 +86,7 @@ class TestCoverage(unittest.TestCase):
         res = audit_file(SAMPLE)
         texts = " ".join(c.text for c in res.comments)
         self.assertIn("INTERNAL BUILD", texts)
-        self.assertEqual(len(res.comments), 3)
+        self.assertEqual(len(res.comments), 4)
 
     def test_sample_x2_string_decoded(self):
         res = audit_file(SAMPLE)
@@ -199,6 +199,7 @@ class TestGeometry(unittest.TestCase):
         self.assertEqual(kinds.get("line"), 12)     # 12 cube edges
         self.assertEqual(kinds.get("circle"), 1)    # datum circle
         self.assertEqual(kinds.get("polyline"), 1)  # probe path
+        self.assertEqual(kinds.get("tess"), 1)      # tessellated PMI leader
         (lo, hi) = m.bounds()
         self.assertEqual(hi[2], 50.0)
 

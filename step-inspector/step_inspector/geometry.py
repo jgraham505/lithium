@@ -228,11 +228,15 @@ def extract_wireframe(res: AuditResult) -> WireModel:
     # ---- pass 3: tessellated geometry ------------------------------------
     for eid, ent in res.entities.items():
         leafs = set(g.leaf_names(ent))
-        if not leafs & {"TRIANGULATED_FACE_SET", "TRIANGULATED_SURFACE_SET",
-                        "COMPLEX_TRIANGULATED_FACE_SET",
-                        "COMPLEX_TRIANGULATED_SURFACE_SET"}:
+        tri = leafs & {"TRIANGULATED_FACE_SET", "TRIANGULATED_SURFACE_SET",
+                       "COMPLEX_TRIANGULATED_FACE_SET",
+                       "COMPLEX_TRIANGULATED_SURFACE_SET"}
+        strips = leafs & {"TESSELLATED_CURVE_SET", "TESSELLATED_GEOMETRIC_SET",
+                          "TESSELLATED_WIRE", "TESSELLATED_EDGE"}
+        if not (tri or strips):
             continue
-        _extract_tessellation(g, ent, model)
+        _extract_tessellation(g, ent, model,
+                              mode="strips" if strips else "triangles")
 
     # ---- pass 4: free points ---------------------------------------------
     for eid, ent in res.entities.items():
@@ -502,7 +506,8 @@ def _sample_bspline(g: _Graph, curve: Entity) -> list:
 # Tessellated geometry
 # ---------------------------------------------------------------------------
 
-def _extract_tessellation(g: _Graph, ent: Entity, model: WireModel) -> None:
+def _extract_tessellation(g: _Graph, ent: Entity, model: WireModel,
+                          mode: str = "triangles") -> None:
     params = _all_params(ent)
     coords: list[Vec3] = []
     for r in _walk_refs(params):
@@ -524,21 +529,30 @@ def _extract_tessellation(g: _Graph, ent: Entity, model: WireModel) -> None:
                 break
     if not coords:
         return
-    # triangles: last parameter that is a list of integer triples
-    triangles: list = []
+    # index lists: last parameter that is a list of integer lists
+    # (triangles for face sets, line strips for curve sets)
+    minlen = 3 if mode == "triangles" else 2
+    indexed: list = []
     for v in reversed(params):
         if isinstance(v, list) and v and isinstance(v[0], list) and \
-                all(isinstance(x, (int, float)) for x in v[0]):
+                v[0] and all(isinstance(x, (int, float)) for x in v[0]):
             ok = True
-            for tri in v:
-                if len(tri) < 3 or any(not isinstance(x, (int, float))
-                                       or int(x) < 1 or int(x) > len(coords)
-                                       for x in tri[:3]):
+            for grp in v:
+                if len(grp) < minlen or any(
+                        not isinstance(x, (int, float))
+                        or int(x) < 1 or int(x) > len(coords)
+                        for x in grp):
                     ok = False
                     break
             if ok:
-                triangles = v
+                indexed = v
                 break
+    if mode == "strips" and indexed:
+        for strip in indexed:
+            pts = [coords[int(i) - 1] for i in strip]
+            model.polylines.append(WirePolyline(pts, ent.eid, "tess"))
+        return
+    triangles = indexed
     if triangles:
         seen = set()
         for tri in triangles:
