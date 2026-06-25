@@ -17,9 +17,15 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
+    "PySide6>=6.5",
     "numpy>=1.24",
     "steptools>=20.0",
 ]
+
+[project.optional-dependencies]
+# pythonocc-core is conda-only (not on PyPI); install with:
+#   conda install -c conda-forge pythonocc-core
+shaded = ["pythonocc-core"]
 
 [project.gui-scripts]
 step-inspector = "step_inspector.__main__:main"

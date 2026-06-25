@@ -132,10 +132,10 @@ layout is identical in both.
 
 ## Install & run
 
-Requires Python 3.10+ with Tkinter (on Debian/Ubuntu: `apt install
-python3-tk`). Runtime dependencies — **NumPy** (geometry math) and
-**steptools** (schema recognition + second reader) — are installed
-automatically:
+Requires Python 3.10+. The GUI is built with **Qt** (PySide6). Runtime
+dependencies — **PySide6** (GUI), **NumPy** (geometry math) and
+**steptools** (schema recognition + second reader) — are all on PyPI and
+installed automatically:
 
 ```sh
 pip install .
@@ -145,9 +145,12 @@ step-inspector path/to/file.step
 or run from a checkout without installing:
 
 ```sh
-pip install numpy steptools
+pip install PySide6 numpy steptools
 python -m step_inspector [path/to/file.step]
 ```
+
+On a headless Linux box Qt needs a few system libs (`libegl1`, `libgl1`,
+`libxkbcommon0`); on a normal desktop they are already present.
 
 ### Headless report (CI / scripting)
 

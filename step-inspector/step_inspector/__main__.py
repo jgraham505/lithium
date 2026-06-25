@@ -46,7 +46,7 @@ def main(argv=None) -> int:
                                       occ_result=occ_result))
         return 0 if res.verify_coverage() else 2
 
-    from .gui.app import run
+    from .gui.qt_app import run
     run(args.file, use_steptools=not args.no_steptools,
         theme_name=args.theme)
     return 0

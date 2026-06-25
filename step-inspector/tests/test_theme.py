@@ -32,6 +32,15 @@ class TestPalettes(unittest.TestCase):
             for c in pal.kind_colors().values():
                 self.assertRegex(c, r"^#[0-9a-fA-F]{6}$")
 
+    def test_qss_builds_for_both(self):
+        from step_inspector.gui import theme
+        for pal in (LIGHT, DARK):
+            css = theme.qss(pal)
+            self.assertIsInstance(css, str)
+            self.assertIn(pal.accent, css)
+            self.assertIn(pal.window, css)
+            self.assertIn("QTabBar::tab", css)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
