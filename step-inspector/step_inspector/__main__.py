@@ -24,6 +24,10 @@ def main(argv=None) -> int:
     ap.add_argument("--theme", choices=("light", "dark"), default="light",
                     help="initial GUI theme (default: light; toggle in View ▸ "
                          "Theme)")
+    ap.add_argument("--shaded", action="store_true",
+                    help="with --report, also tessellate with OpenCASCADE and "
+                         "include the shaded-geometry accounting (needs "
+                         "pythonocc-core)")
     args = ap.parse_args(argv)
 
     if args.report:
@@ -34,7 +38,12 @@ def main(argv=None) -> int:
         from . import steptools_bridge as sb
         res = audit_file(args.file)
         st = None if args.no_steptools else sb.load(args.file)
-        sys.stdout.write(build_report(res, st, include_map=not args.no_map))
+        occ_result = None
+        if args.shaded:
+            from . import occ_backend
+            occ_result = occ_backend.load_and_mesh(args.file)
+        sys.stdout.write(build_report(res, st, include_map=not args.no_map,
+                                      occ_result=occ_result))
         return 0 if res.verify_coverage() else 2
 
     from .gui.app import run

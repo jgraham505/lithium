@@ -37,6 +37,8 @@ class Viewer3D(tk.Frame):
                                 highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
         self.model: WireModel | None = None
+        self.mesh = None                 # occ_backend.ShadedMesh or None
+        self.mode = "wire"               # "wire" | "shaded"
         self.show = {"edges": True, "vertices": True, "points": True,
                      "axes": True}
         # view state
@@ -66,6 +68,13 @@ class Viewer3D(tk.Frame):
         self.model = model
         self.fit()
 
+    def set_mesh(self, mesh) -> None:
+        self.mesh = mesh
+
+    def set_mode(self, mode: str) -> None:
+        self.mode = mode
+        self.fit()
+
     def set_visible(self, layer: str, on: bool) -> None:
         self.show[layer] = bool(on)
         self.redraw()
@@ -75,10 +84,16 @@ class Viewer3D(tk.Frame):
         self.canvas.configure(bg=palette.canvas_bg)
         self.redraw()
 
+    def _active_bounds(self):
+        if self.mode == "shaded" and self.mesh is not None \
+                and not self.mesh.empty:
+            return self.mesh.bounds()
+        return self.model.bounds() if self.model else None
+
     def fit(self) -> None:
         self.panx = self.pany = 0.0
         self.scale = 1.0
-        b = self.model.bounds() if self.model else None
+        b = self._active_bounds()
         if b:
             (x0, y0, z0), (x1, y1, z1) = b
             self.center = np.array([(x0 + x1) / 2, (y0 + y1) / 2,
@@ -88,7 +103,7 @@ class Viewer3D(tk.Frame):
         self.redraw()
 
     def _update_fit_scale(self) -> None:
-        b = self.model.bounds() if self.model else None
+        b = self._active_bounds()
         if not b:
             self.fit_scale = 1.0
             return
@@ -125,21 +140,22 @@ class Viewer3D(tk.Frame):
         self.redraw()
 
     # -- projection -----------------------------------------------------------
+    def _rotation(self):
+        """Unit rotation mapping world -> (screen_x, screen_y_down, depth)."""
+        cy, sy = math.cos(self.yaw), math.sin(self.yaw)
+        cp, sp = math.cos(self.pitch), math.sin(self.pitch)
+        return np.array([
+            [cy,        -sy,        0.0],     # screen x (right)
+            [-sy * sp,  -cy * sp,   -cp],     # screen y (down)
+            [sy * cp,   cy * cp,    -sp],     # depth (into screen)
+        ])
+
     def _proj_matrix(self):
         """Return (M, offset) so screen_xy = points @ M.T + offset, plus a
         depth column.  Pure NumPy: projecting an (N,3) array is one matmul."""
-        cy, sy = math.cos(self.yaw), math.sin(self.yaw)
-        cp, sp = math.cos(self.pitch), math.sin(self.pitch)
+        R = self._rotation()
         s = self.fit_scale * self.scale
-        # yaw about Z, then pitch about screen X; Z is up on screen.
-        # x' =  (x*cy - y*sy) * s                          -> screen x
-        # z' =  ((x*sy + y*cy)*sp + z*cp) * s              -> screen y (down)
-        # depth = (x*sy + y*cy)*cp - z*sp
-        M = np.array([
-            [cy * s,            -sy * s,           0.0],     # screen x
-            [-sy * sp * s,      -cy * sp * s,      -cp * s],  # screen y (neg up)
-            [sy * cp,            cy * cp,          -sp],     # depth
-        ])
+        M = R * np.array([[s], [s], [1.0]])   # scale screen axes, not depth
         w2 = self.canvas.winfo_width() / 2 + self.panx
         h2 = self.canvas.winfo_height() / 2 + self.pany
         offset = np.array([w2, h2, 0.0])
@@ -155,6 +171,8 @@ class Viewer3D(tk.Frame):
         return out
 
     # -- drawing -----------------------------------------------------------
+    MAX_TRIANGLES = 120_000   # painter's-algorithm cap for the Tk canvas
+
     def redraw(self) -> None:
         c = self.canvas
         pal = self.pal
@@ -162,6 +180,9 @@ class Viewer3D(tk.Frame):
         self._update_fit_scale()
         if self.show["axes"]:
             self._axes()
+        if self.mode == "shaded":
+            self._redraw_shaded()
+            return
         if self.model is None:
             self._center_text("No geometry loaded", pal.text_dim)
             return
@@ -201,6 +222,52 @@ class Viewer3D(tk.Frame):
         if self.truncated:
             c.create_text(10, 10, anchor="nw", fill=pal.hud,
                           text="Display truncated (very large model)",
+                          font=("TkDefaultFont", 9, "bold"))
+
+    def _redraw_shaded(self) -> None:
+        c = self.canvas
+        pal = self.pal
+        mesh = self.mesh
+        if mesh is None:
+            self._center_text("Shaded view: OpenCASCADE backend not loaded.\n"
+                              "Install pythonocc-core to enable it.",
+                              pal.text_dim)
+            return
+        if mesh.empty:
+            self._center_text("OpenCASCADE produced no surface mesh for this "
+                              "file.", pal.text_dim)
+            return
+        scr = self._project(mesh.vertices)
+        tris = mesh.triangles
+        depth = scr[tris, 2].mean(axis=1)
+        order = np.argsort(-depth)                 # far first (painter's)
+        truncated = False
+        if len(order) > self.MAX_TRIANGLES:
+            order = order[-self.MAX_TRIANGLES:]    # keep nearest
+            truncated = True
+        # flat shading: two-sided headlight
+        R = self._rotation()
+        nv = mesh.normals @ R.T
+        light = np.array([-0.35, -0.5, -0.78])
+        light /= np.linalg.norm(light)
+        amb = 0.34
+        inten = amb + (1 - amb) * np.abs(nv @ light)
+        base = np.array(pal.surface, dtype=float)
+        rgb = np.clip(inten[:, None] * base, 0, 255).astype(int)
+        xy = scr[:, :2]
+        edge = mesh.face_of_tri is not None and len(tris) <= 4000
+        for idx in order:
+            t = tris[idx]
+            r, g, b = rgb[idx]
+            color = f"#{r:02x}{g:02x}{b:02x}"
+            coords = xy[t].ravel().tolist()
+            c.create_polygon(*coords, fill=color,
+                             outline=(pal.surface_edge if edge else color),
+                             width=1)
+        if truncated:
+            c.create_text(10, 10, anchor="nw", fill=pal.hud,
+                          text=f"Showing nearest {self.MAX_TRIANGLES:,} of "
+                               f"{len(tris):,} triangles",
                           font=("TkDefaultFont", 9, "bold"))
 
     def _center_text(self, text, color):
