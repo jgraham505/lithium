@@ -5,33 +5,39 @@ the audit parser and turns recognizable geometric entities into 3D polylines
 and points for the viewer.  Entities whose exact curve geometry is not
 supported are still shown — as straight chords between their vertices — and
 counted, so nothing silently disappears.
+
+Geometry is represented with NumPy: every polyline is an ``(N, 3)`` float
+array and every point is a length-3 array, so sampling and the viewer's
+projection are vectorized.
 """
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from typing import Optional
 
+import numpy as np
+
 from .parser import AuditResult, Entity, Ref, Typed
 
-Vec3 = tuple[float, float, float]
+Vec3 = np.ndarray            # shape (3,), float64
 
-CURVE_SAMPLES = 48        # segments used when sampling circles/splines
+CURVE_SAMPLES = 48           # segments used when sampling circles/splines
+_EMPTY = np.empty((0, 3), dtype=float)
 
 
 @dataclass
 class WirePolyline:
-    points: list            # [Vec3]
-    eid: int                # source entity id
-    kind: str               # "line"|"circle"|"ellipse"|"spline"|"polyline"
-                            # |"approx"|"tess"
+    points: np.ndarray       # (N, 3) float array
+    eid: int                 # source entity id
+    kind: str                # "line"|"circle"|"ellipse"|"spline"|"polyline"
+                             # |"approx"|"tess"
     closed: bool = False
 
 
 @dataclass
 class WireModel:
-    polylines: list = field(default_factory=list)   # [WirePolyline]
+    polylines: list = field(default_factory=list)       # [WirePolyline]
     vertex_points: list = field(default_factory=list)   # [(Vec3, eid)]
     free_points: list = field(default_factory=list)     # [(Vec3, eid)]
     unsupported: dict = field(default_factory=dict)     # type name -> count
@@ -41,35 +47,34 @@ class WireModel:
     def empty(self) -> bool:
         return not (self.polylines or self.vertex_points or self.free_points)
 
+    def _all_arrays(self) -> list:
+        arrays = [pl.points for pl in self.polylines if len(pl.points)]
+        if self.vertex_points:
+            arrays.append(np.array([p for p, _ in self.vertex_points]))
+        if self.free_points:
+            arrays.append(np.array([p for p, _ in self.free_points]))
+        return arrays
+
     def bounds(self) -> Optional[tuple]:
-        pts = [p for pl in self.polylines for p in pl.points]
-        pts += [p for p, _ in self.vertex_points]
-        pts += [p for p, _ in self.free_points]
-        if not pts:
+        arrays = self._all_arrays()
+        if not arrays:
             return None
-        xs, ys, zs = zip(*pts)
-        return ((min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs)))
+        allp = np.vstack(arrays)
+        lo = allp.min(axis=0)
+        hi = allp.max(axis=0)
+        return ((float(lo[0]), float(lo[1]), float(lo[2])),
+                (float(hi[0]), float(hi[1]), float(hi[2])))
 
 
 # -- small vector helpers ----------------------------------------------------
 
-def _add(a: Vec3, b: Vec3) -> Vec3:
-    return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+def _v(x, y, z) -> Vec3:
+    return np.array([float(x), float(y), float(z)])
 
-def _scale(a: Vec3, s: float) -> Vec3:
-    return (a[0] * s, a[1] * s, a[2] * s)
-
-def _sub(a: Vec3, b: Vec3) -> Vec3:
-    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
-
-def _cross(a: Vec3, b: Vec3) -> Vec3:
-    return (a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0])
 
 def _norm(a: Vec3) -> Vec3:
-    m = math.sqrt(a[0] ** 2 + a[1] ** 2 + a[2] ** 2)
-    return (a[0] / m, a[1] / m, a[2] / m) if m else (0.0, 0.0, 1.0)
+    n = float(np.linalg.norm(a))
+    return a / n if n else np.array([0.0, 0.0, 1.0])
 
 
 class _Graph:
@@ -99,6 +104,14 @@ class _Graph:
         return any(n in leaf for n in names)
 
     # -- coordinate primitives -------------------------------------------
+    def _triple(self, raw) -> Optional[Vec3]:
+        c = [float(x) for x in raw if isinstance(x, (int, float))]
+        if not c:
+            return None
+        while len(c) < 3:
+            c.append(0.0)
+        return np.array(c[:3])
+
     def point(self, v) -> Optional[Vec3]:
         ent = self.deref(v)
         if ent is None:
@@ -106,10 +119,7 @@ class _Graph:
         p = self.params_of(ent, "CARTESIAN_POINT")
         if p is None or len(p) < 2 or not isinstance(p[1], list):
             return None
-        c = [x for x in p[1] if isinstance(x, (int, float))]
-        while len(c) < 3:
-            c.append(0.0)
-        return (float(c[0]), float(c[1]), float(c[2]))
+        return self._triple(p[1])
 
     def direction(self, v) -> Optional[Vec3]:
         ent = self.deref(v)
@@ -118,10 +128,8 @@ class _Graph:
         p = self.params_of(ent, "DIRECTION")
         if p is None or len(p) < 2 or not isinstance(p[1], list):
             return None
-        c = [x for x in p[1] if isinstance(x, (int, float))]
-        while len(c) < 3:
-            c.append(0.0)
-        return _norm((float(c[0]), float(c[1]), float(c[2])))
+        t = self._triple(p[1])
+        return _norm(t) if t is not None else None
 
     def vertex(self, v) -> Optional[Vec3]:
         ent = self.deref(v)
@@ -140,17 +148,19 @@ class _Graph:
         p = self.params_of(ent, "AXIS2_PLACEMENT_3D")
         if p is None or len(p) < 2:
             return None
-        origin = self.point(p[1]) or (0.0, 0.0, 0.0)
+        origin = self.point(p[1])
+        if origin is None:
+            origin = _v(0, 0, 0)
         z = self.direction(p[2]) if len(p) > 2 else None
         x = self.direction(p[3]) if len(p) > 3 else None
-        z = z or (0.0, 0.0, 1.0)
+        if z is None:
+            z = _v(0, 0, 1)
         if x is None:
-            seed = (1.0, 0.0, 0.0) if abs(z[0]) < 0.9 else (0.0, 1.0, 0.0)
-            x = _norm(_cross(seed, z))
+            seed = _v(1, 0, 0) if abs(z[0]) < 0.9 else _v(0, 1, 0)
+            x = _norm(np.cross(seed, z))
         # re-orthogonalize x against z
-        d = x[0] * z[0] + x[1] * z[1] + x[2] * z[2]
-        x = _norm(_sub(x, _scale(z, d)))
-        y = _cross(z, x)
+        x = _norm(x - z * float(np.dot(x, z)))
+        y = np.cross(z, x)
         return origin, z, x, y
 
 
@@ -182,7 +192,7 @@ def extract_wireframe(res: AuditResult) -> WireModel:
                 vp = g.params_of(vent, "VERTEX_POINT")
                 if vp and len(vp) > 1:
                     mark_point_used(vp[1])
-        if pts and len(pts) >= 2:
+        if len(pts) >= 2:
             model.polylines.append(WirePolyline(pts, eid, kind))
         if v1 is not None:
             model.vertex_points.append((v1, eid))
@@ -197,8 +207,7 @@ def extract_wireframe(res: AuditResult) -> WireModel:
         if "POLYLINE" in leafs:
             p = g.params_of(ent, "POLYLINE")
             if p and len(p) > 1 and isinstance(p[1], list):
-                pts = [g.point(r) for r in p[1]]
-                pts = [q for q in pts if q is not None]
+                pts = _stack(g.point(r) for r in p[1])
                 for r in p[1]:
                     mark_point_used(r)
                 if len(pts) >= 2:
@@ -207,21 +216,21 @@ def extract_wireframe(res: AuditResult) -> WireModel:
         if "CIRCLE" in leafs or "ELLIPSE" in leafs:
             pts, kind = _sample_curve(g, ent, None, None)
             _mark_curve_points(g, ent, used_points)
-            if pts:
+            if len(pts):
                 model.polylines.append(
                     WirePolyline(pts, eid, kind, closed=True))
             continue
         if "TRIMMED_CURVE" in leafs:
             pts, kind = _sample_curve(g, ent, None, None)
             _mark_curve_points(g, ent, used_points)
-            if pts and len(pts) >= 2:
+            if len(pts) >= 2:
                 model.polylines.append(WirePolyline(pts, eid, kind))
             continue
         if leafs & {"B_SPLINE_CURVE_WITH_KNOTS", "B_SPLINE_CURVE",
                     "BEZIER_CURVE", "QUASI_UNIFORM_CURVE", "UNIFORM_CURVE"}:
             pts, kind = _sample_curve(g, ent, None, None)
             _mark_curve_points(g, ent, used_points)
-            if pts and len(pts) >= 2:
+            if len(pts) >= 2:
                 model.polylines.append(WirePolyline(pts, eid, kind))
             continue
 
@@ -265,6 +274,12 @@ def extract_wireframe(res: AuditResult) -> WireModel:
     return model
 
 
+def _stack(points) -> np.ndarray:
+    """Stack an iterable of optional Vec3 into an (N, 3) array."""
+    rows = [p for p in points if p is not None]
+    return np.array(rows) if rows else _EMPTY
+
+
 def _mark_curve_points(g: _Graph, ent: Entity, used: set) -> None:
     for rec in ent.records:
         for r in _walk_refs(rec.params or []):
@@ -301,28 +316,30 @@ def _walk_refs(values):
 
 def _sample_curve(g: _Graph, curve: Optional[Entity],
                   v1: Optional[Vec3], v2: Optional[Vec3]):
-    """Return (points, kind) for a curve entity between optional vertices."""
+    """Return (points, kind) for a curve entity between optional vertices.
+
+    ``points`` is always an ``(N, 3)`` array (possibly empty).
+    """
     if curve is None:
-        if v1 is not None and v2 is not None:
-            return [v1, v2], "approx"
-        return [], "approx"
-    leafs = set(ln for ln in (r.type_name for r in curve.records))
+        return _chord(v1, v2)
+    leafs = set(r.type_name for r in curve.records)
 
     if "LINE" in leafs:
         if v1 is not None and v2 is not None:
-            return [v1, v2], "line"
+            return np.array([v1, v2]), "line"
         p = g.params_of(curve, "LINE")
         if p and len(p) > 2:
             origin = g.point(p[1])
             vent = g.deref(p[2])
-            if origin and vent:
+            if origin is not None and vent is not None:
                 vp = g.params_of(vent, "VECTOR")
                 if vp and len(vp) > 2:
                     d = g.direction(vp[1])
                     mag = vp[2] if isinstance(vp[2], (int, float)) else 1.0
-                    if d:
-                        return [origin, _add(origin, _scale(d, float(mag)))], "line"
-        return [], "approx"
+                    if d is not None:
+                        return np.array([origin, origin + d * float(mag)]), \
+                            "line"
+        return _EMPTY, "approx"
 
     if "CIRCLE" in leafs or "ELLIPSE" in leafs:
         name = "CIRCLE" if "CIRCLE" in leafs else "ELLIPSE"
@@ -337,37 +354,34 @@ def _sample_curve(g: _Graph, curve: Optional[Entity],
             r1 = r2 = float(p[2]) if isinstance(p[2], (int, float)) else 1.0
         else:
             r1 = float(p[2]) if isinstance(p[2], (int, float)) else 1.0
-            r2 = float(p[3]) if len(p) > 3 and isinstance(p[3], (int, float)) else r1
-
-        def at(theta: float) -> Vec3:
-            return _add(origin, _add(_scale(x, r1 * math.cos(theta)),
-                                     _scale(y, r2 * math.sin(theta))))
+            r2 = float(p[3]) if len(p) > 3 and isinstance(
+                p[3], (int, float)) else r1
 
         def angle_of(pt: Vec3) -> float:
-            d = _sub(pt, origin)
-            return math.atan2(
-                (d[0] * y[0] + d[1] * y[1] + d[2] * y[2]) / r2,
-                (d[0] * x[0] + d[1] * x[1] + d[2] * x[2]) / r1)
+            d = pt - origin
+            return float(np.arctan2(np.dot(d, y) / r2, np.dot(d, x) / r1))
 
         if v1 is None or v2 is None or _close(v1, v2):
-            thetas = [2 * math.pi * i / CURVE_SAMPLES
-                      for i in range(CURVE_SAMPLES + 1)]
+            thetas = np.linspace(0.0, 2 * np.pi, CURVE_SAMPLES + 1)
         else:
             a1, a2 = angle_of(v1), angle_of(v2)
             if a2 <= a1 + 1e-9:
-                a2 += 2 * math.pi
-            thetas = [a1 + (a2 - a1) * i / CURVE_SAMPLES
-                      for i in range(CURVE_SAMPLES + 1)]
-        pts = [at(t) for t in thetas]
+                a2 += 2 * np.pi
+            thetas = np.linspace(a1, a2, CURVE_SAMPLES + 1)
+        # vectorized: origin + cos(t)*r1*x + sin(t)*r2*y
+        pts = (origin
+               + np.outer(np.cos(thetas) * r1, x)
+               + np.outer(np.sin(thetas) * r2, y))
         if v1 is not None and v2 is not None and not _close(v1, v2):
             pts[0], pts[-1] = v1, v2
         return pts, name.lower()
 
     if "B_SPLINE_CURVE_WITH_KNOTS" in leafs or "B_SPLINE_CURVE" in leafs \
-            or leafs & {"BEZIER_CURVE", "QUASI_UNIFORM_CURVE", "UNIFORM_CURVE"}:
+            or leafs & {"BEZIER_CURVE", "QUASI_UNIFORM_CURVE",
+                        "UNIFORM_CURVE"}:
         pts = _sample_bspline(g, curve)
-        if pts:
-            if v1 is not None and v2 is not None and len(pts) >= 2:
+        if len(pts) >= 2:
+            if v1 is not None and v2 is not None:
                 pts[0], pts[-1] = v1, v2
             return pts, "spline"
         return _chord(v1, v2)
@@ -378,20 +392,22 @@ def _sample_curve(g: _Graph, curve: Optional[Entity],
             basis = g.deref(p[1])
             t1 = _trim_point(g, p[2])
             t2 = _trim_point(g, p[3])
-            return _sample_curve(g, basis, t1 or v1, t2 or v2)
+            return _sample_curve(g, basis,
+                                 t1 if t1 is not None else v1,
+                                 t2 if t2 is not None else v2)
         return _chord(v1, v2)
 
     if "POLYLINE" in leafs:
         p = g.params_of(curve, "POLYLINE")
         if p and len(p) > 1 and isinstance(p[1], list):
-            pts = [g.point(r) for r in p[1]]
-            pts = [q for q in pts if q is not None]
+            pts = _stack(g.point(r) for r in p[1])
             if len(pts) >= 2:
                 return pts, "polyline"
         return _chord(v1, v2)
 
     if "SURFACE_CURVE" in leafs or "SEAM_CURVE" in leafs:
-        p = g.params_of(curve, "SURFACE_CURVE") or g.params_of(curve, "SEAM_CURVE")
+        p = g.params_of(curve, "SURFACE_CURVE") or \
+            g.params_of(curve, "SEAM_CURVE")
         if p and len(p) > 1:
             return _sample_curve(g, g.deref(p[1]), v1, v2)
 
@@ -400,13 +416,12 @@ def _sample_curve(g: _Graph, curve: Optional[Entity],
 
 def _chord(v1, v2):
     if v1 is not None and v2 is not None:
-        return [v1, v2], "approx"
-    return [], "approx"
+        return np.array([v1, v2]), "approx"
+    return _EMPTY, "approx"
 
 
 def _close(a: Vec3, b: Vec3, tol: float = 1e-9) -> bool:
-    return (abs(a[0] - b[0]) < tol and abs(a[1] - b[1]) < tol
-            and abs(a[2] - b[2]) < tol)
+    return bool(np.allclose(a, b, atol=tol))
 
 
 def _trim_point(g: _Graph, trim) -> Optional[Vec3]:
@@ -419,8 +434,8 @@ def _trim_point(g: _Graph, trim) -> Optional[Vec3]:
     return None
 
 
-def _sample_bspline(g: _Graph, curve: Entity) -> list:
-    """Sample a (possibly rational) B-spline curve with de Boor."""
+def _sample_bspline(g: _Graph, curve: Entity) -> np.ndarray:
+    """Sample a (possibly rational) B-spline curve with de Boor's algorithm."""
     rec = None
     for name in ("B_SPLINE_CURVE_WITH_KNOTS", "B_SPLINE_CURVE",
                  "BEZIER_CURVE", "QUASI_UNIFORM_CURVE", "UNIFORM_CURVE"):
@@ -429,18 +444,19 @@ def _sample_bspline(g: _Graph, curve: Entity) -> list:
             rec = (name, p)
             break
     if rec is None:
-        return []
+        return _EMPTY
     name, p = rec
     if len(p) < 3 or not isinstance(p[1], (int, float)) \
             or not isinstance(p[2], list):
-        return []
+        return _EMPTY
     degree = int(p[1])
     ctrl = [g.point(r) for r in p[2]]
     ctrl = [c for c in ctrl if c is not None]
-    if len(ctrl) < 2:
-        return []
-    if degree < 1 or degree >= len(ctrl):
-        degree = max(1, min(3, len(ctrl) - 1))
+    n_ctrl = len(ctrl)
+    if n_ctrl < 2:
+        return _EMPTY
+    if degree < 1 or degree >= n_ctrl:
+        degree = max(1, min(3, n_ctrl - 1))
 
     # knot vector
     knots: list[float] = []
@@ -450,56 +466,46 @@ def _sample_bspline(g: _Graph, curve: Entity) -> list:
         kvals = [float(k) for k in p[7] if isinstance(k, (int, float))]
         for m, k in zip(mults, kvals):
             knots.extend([k] * m)
-    if len(knots) != len(ctrl) + degree + 1:
+    if len(knots) != n_ctrl + degree + 1:
         # uniform clamped fallback
-        inner = len(ctrl) - degree
+        inner = n_ctrl - degree
         knots = [0.0] * (degree + 1) + \
                 [i / inner for i in range(1, inner)] + \
                 [1.0] * (degree + 1)
-    t0, t1 = knots[degree], knots[len(ctrl)]
+    knots = np.asarray(knots, dtype=float)
+    t0, t1 = knots[degree], knots[n_ctrl]
 
-    # weights from RATIONAL_B_SPLINE_CURVE leaf in a complex instance
+    # control points as homogeneous coordinates (x, y, z, w)
     weights = None
     wp = g.params_of(curve, "RATIONAL_B_SPLINE_CURVE")
     if wp:
         for v in wp:
-            if isinstance(v, list) and len(v) == len(ctrl) and \
+            if isinstance(v, list) and len(v) == n_ctrl and \
                     all(isinstance(w, (int, float)) for w in v):
-                weights = [float(w) for w in v]
+                weights = np.array([float(w) for w in v])
                 break
+    homo = np.ones((n_ctrl, 4))
+    homo[:, :3] = np.array(ctrl)
+    if weights is not None:
+        homo[:, :3] *= weights[:, None]
+        homo[:, 3] = weights
 
-    def de_boor(t: float) -> Vec3:
+    def de_boor(t: float) -> np.ndarray:
         k = degree
-        # find knot span
-        hi = len(ctrl) - 1
-        span = None
-        for j in range(degree, len(knots) - degree - 1):
-            if knots[j] <= t <= knots[j + 1]:
-                span = j
-                break
-        if span is None:
-            span = min(max(degree, hi), len(knots) - degree - 2)
-        if weights:
-            d = [(ctrl[j][0] * weights[j], ctrl[j][1] * weights[j],
-                  ctrl[j][2] * weights[j], weights[j])
-                 for j in range(span - k, span + 1)]
-        else:
-            d = [(ctrl[j][0], ctrl[j][1], ctrl[j][2], 1.0)
-                 for j in range(span - k, span + 1)]
+        span = int(np.searchsorted(knots, t, side="right") - 1)
+        span = min(max(span, degree), n_ctrl - 1)
+        d = homo[span - k:span + 1].copy()
         for r in range(1, k + 1):
             for j in range(k, r - 1, -1):
                 i = span - k + j
                 den = knots[i + k - r + 1] - knots[i]
                 alpha = 0.0 if den == 0 else (t - knots[i]) / den
-                d[j] = tuple(d[j - 1][m] * (1 - alpha) + d[j][m] * alpha
-                             for m in range(4))
-        x, y, z, w = d[k]
-        if weights and w:
-            return (x / w, y / w, z / w)
-        return (x, y, z)
+                d[j] = d[j - 1] * (1 - alpha) + d[j] * alpha
+        pt = d[k]
+        return pt[:3] / pt[3] if pt[3] else pt[:3]
 
-    return [de_boor(t0 + (t1 - t0) * i / CURVE_SAMPLES)
-            for i in range(CURVE_SAMPLES + 1)]
+    ts = np.linspace(t0, t1, CURVE_SAMPLES + 1)
+    return np.array([de_boor(float(t)) for t in ts])
 
 
 # ---------------------------------------------------------------------------
@@ -509,7 +515,7 @@ def _sample_bspline(g: _Graph, curve: Entity) -> list:
 def _extract_tessellation(g: _Graph, ent: Entity, model: WireModel,
                           mode: str = "triangles") -> None:
     params = _all_params(ent)
-    coords: list[Vec3] = []
+    coords_rows: list = []
     for r in _walk_refs(params):
         tgt = g.ents.get(r.eid)
         if tgt is None:
@@ -523,12 +529,15 @@ def _extract_tessellation(g: _Graph, ent: Entity, model: WireModel,
                         nums = [x for x in trip
                                 if isinstance(x, (int, float))]
                         if len(nums) >= 3:
-                            coords.append((float(nums[0]), float(nums[1]),
-                                           float(nums[2])))
-            if coords:
+                            coords_rows.append(
+                                (float(nums[0]), float(nums[1]),
+                                 float(nums[2])))
+            if coords_rows:
                 break
-    if not coords:
+    if not coords_rows:
         return
+    coords = np.array(coords_rows)
+    n = len(coords)
     # index lists: last parameter that is a list of integer lists
     # (triangles for face sets, line strips for curve sets)
     minlen = 3 if mode == "triangles" else 2
@@ -540,8 +549,7 @@ def _extract_tessellation(g: _Graph, ent: Entity, model: WireModel,
             for grp in v:
                 if len(grp) < minlen or any(
                         not isinstance(x, (int, float))
-                        or int(x) < 1 or int(x) > len(coords)
-                        for x in grp):
+                        or int(x) < 1 or int(x) > n for x in grp):
                     ok = False
                     break
             if ok:
@@ -549,21 +557,21 @@ def _extract_tessellation(g: _Graph, ent: Entity, model: WireModel,
                 break
     if mode == "strips" and indexed:
         for strip in indexed:
-            pts = [coords[int(i) - 1] for i in strip]
-            model.polylines.append(WirePolyline(pts, ent.eid, "tess"))
+            idx = np.array([int(i) - 1 for i in strip])
+            model.polylines.append(
+                WirePolyline(coords[idx], ent.eid, "tess"))
         return
-    triangles = indexed
-    if triangles:
+    if indexed:                       # triangles -> unique edges
         seen = set()
-        for tri in triangles:
-            a, b, c = (int(tri[0]) - 1, int(tri[1]) - 1, int(tri[2]) - 1)
+        for tri in indexed:
+            a, b, c = int(tri[0]) - 1, int(tri[1]) - 1, int(tri[2]) - 1
             for e in ((a, b), (b, c), (c, a)):
                 key = (min(e), max(e))
                 if key in seen:
                     continue
                 seen.add(key)
                 model.polylines.append(WirePolyline(
-                    [coords[e[0]], coords[e[1]]], ent.eid, "tess"))
+                    coords[list(e)], ent.eid, "tess"))
     else:
-        for ptc in coords:
-            model.free_points.append((ptc, ent.eid))
+        for row in coords:
+            model.free_points.append((row, ent.eid))

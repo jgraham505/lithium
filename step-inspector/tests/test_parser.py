@@ -203,6 +203,18 @@ class TestGeometry(unittest.TestCase):
         (lo, hi) = m.bounds()
         self.assertEqual(hi[2], 50.0)
 
+    def test_points_are_numpy_arrays(self):
+        import numpy as np
+        res = audit_file(SAMPLE)
+        m = extract_wireframe(res)
+        pl = m.polylines[0]
+        self.assertIsInstance(pl.points, np.ndarray)
+        self.assertEqual(pl.points.ndim, 2)
+        self.assertEqual(pl.points.shape[1], 3)
+        # bounds still returns plain float tuples for reports/UI
+        lo, hi = m.bounds()
+        self.assertIsInstance(lo[0], float)
+
     def test_bspline_sampling(self):
         res = audit_bytes(make(
             "ISO-10303-21;HEADER;ENDSEC;DATA;\n"

@@ -15,44 +15,77 @@ from ..pmi import CATEGORIES as PMI_CATEGORIES, extract_pmi
 from ..parser import (AuditResult, Entity, Kind, Ref, Str, Typed,
                       audit_file, format_value)
 from ..report import build_report, coverage_summary
-from .viewer3d import KIND_COLORS, KIND_LABELS, Viewer3D
+from . import theme
+from .theme import PALETTES
+from .viewer3d import KIND_LABELS, Viewer3D
 
 APP_TITLE = "STEP Inspector"
 
-SPAN_TAG_STYLE = {
-    Kind.STRUCTURE:  dict(background="#dfe7f5"),
-    Kind.HEADER:     dict(background="#e8f3e3"),
-    Kind.ENTITY:     dict(background="#ffffff"),
-    Kind.COMMENT:    dict(background="#fff2c4"),
-    Kind.WHITESPACE: dict(background="#ffffff"),
-    Kind.ORPHAN:     dict(background="#ffd2d2"),
-}
+# Span categories shown in the File-audit legend (background comes from the
+# active palette via Palette.span_backgrounds()).
 SPAN_LEGEND = [
-    ("Entity data", "#ffffff"),
-    ("Header", "#e8f3e3"),
-    ("Structure", "#dfe7f5"),
-    ("Comment — review", "#fff2c4"),
-    ("Orphaned — review", "#ffd2d2"),
+    ("Entity data", "entity"),
+    ("Header", "header"),
+    ("Structure", "structure"),
+    ("Comment — review", "comment"),
+    ("Orphaned — review", "orphan"),
 ]
-
-SEV_COLORS = {"orphan": "#c62828", "comment": "#a06a00",
-              "warning": "#8a4baf", "info": "#33691e"}
 
 
 class InspectorApp(tk.Tk):
-    def __init__(self, path: str | None = None, use_steptools: bool = True):
+    def __init__(self, path: str | None = None, use_steptools: bool = True,
+                 theme_name: str = "light"):
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("1280x840")
+        self.geometry("1320x860")
+        self.minsize(900, 600)
         self.use_steptools = use_steptools
         self.res: AuditResult | None = None
         self.stinfo: sb.SteptoolsInfo | None = None
         self.wire = None
         self.pmi = None
+
+        # theming
+        self.style = ttk.Style(self)
+        self.fonts = theme.fonts()
+        self.theme_name = tk.StringVar(value=theme_name)
+        self.pal = PALETTES.get(theme_name, PALETTES["light"])
+
         self._build_menu()
         self._build_layout()
+        self._apply_theme()
         if path:
             self.after(100, lambda: self.open_path(path))
+
+    @property
+    def tabs(self):
+        return (self.tab_overview, self.tab_entities, self.tab_geometry,
+                self.tab_pmi, self.tab_audit, self.tab_review,
+                self.tab_strings)
+
+    # ------------------------------------------------------------- theming
+    def _apply_theme(self):
+        self.pal = PALETTES[self.theme_name.get()]
+        theme.apply(self, self.style, self.pal, self.fonts)
+        self._style_banner()
+        for tab in self.tabs:
+            tab.restyle(self.pal)
+        if self.res is not None:
+            for tab in self.tabs:
+                tab.populate()
+        else:
+            self.tab_geometry.viewer.apply_palette(self.pal)
+
+    def set_theme(self, name: str):
+        self.theme_name.set(name)
+        self._apply_theme()
+
+    def _style_banner(self):
+        pal = self.pal
+        self.banner.configure(style="Banner.TFrame")
+        self.lbl_file.configure(style="Banner.TLabel")
+        if not self.res:
+            self.lbl_cov.configure(bg=pal.raised, fg=pal.text_dim)
 
     # ------------------------------------------------------------------ UI
     def _build_menu(self):
@@ -68,6 +101,18 @@ class InspectorApp(tk.Tk):
         filem.add_separator()
         filem.add_command(label="Quit", command=self.destroy)
         m.add_cascade(label="File", menu=filem)
+
+        viewm = tk.Menu(m, tearoff=0)
+        themem = tk.Menu(viewm, tearoff=0)
+        themem.add_radiobutton(label="Light", value="light",
+                               variable=self.theme_name,
+                               command=lambda: self.set_theme("light"))
+        themem.add_radiobutton(label="Dark", value="dark",
+                               variable=self.theme_name,
+                               command=lambda: self.set_theme("dark"))
+        viewm.add_cascade(label="Theme", menu=themem)
+        m.add_cascade(label="View", menu=viewm)
+
         helpm = tk.Menu(m, tearoff=0)
         helpm.add_command(label="About", command=self._about)
         m.add_cascade(label="Help", menu=helpm)
@@ -77,16 +122,18 @@ class InspectorApp(tk.Tk):
 
     def _build_layout(self):
         # summary banner
-        top = ttk.Frame(self, padding=(8, 6))
-        top.pack(fill="x")
-        self.lbl_file = ttk.Label(top, text="No file loaded — File ▸ Open…",
-                                  font=("TkDefaultFont", 10, "bold"))
+        self.banner = ttk.Frame(self, style="Banner.TFrame", padding=(12, 9))
+        self.banner.pack(fill="x")
+        self.lbl_file = ttk.Label(self.banner, style="Banner.TLabel",
+                                  text="No file loaded — File ▸ Open…",
+                                  font=(self.fonts["ui"], 11, "bold"))
         self.lbl_file.pack(side="left")
-        self.lbl_cov = tk.Label(top, text="", padx=10, pady=2)
+        self.lbl_cov = tk.Label(self.banner, text="", padx=12, pady=4,
+                                font=(self.fonts["ui"], 9, "bold"))
         self.lbl_cov.pack(side="right")
 
         self.nb = ttk.Notebook(self)
-        self.nb.pack(fill="both", expand=True, padx=4, pady=4)
+        self.nb.pack(fill="both", expand=True, padx=8, pady=(4, 6))
         self.tab_overview = OverviewTab(self.nb, self)
         self.tab_entities = EntitiesTab(self.nb, self)
         self.tab_geometry = GeometryTab(self.nb, self)
@@ -94,26 +141,28 @@ class InspectorApp(tk.Tk):
         self.tab_audit = AuditTab(self.nb, self)
         self.tab_review = ReviewTab(self.nb, self)
         self.tab_strings = StringsTab(self.nb, self)
-        self.nb.add(self.tab_overview, text=" Overview ")
-        self.nb.add(self.tab_entities, text=" Entities ")
-        self.nb.add(self.tab_geometry, text=" Geometry ")
-        self.nb.add(self.tab_pmi, text=" PMI / GD&T ")
-        self.nb.add(self.tab_audit, text=" File audit ")
-        self.nb.add(self.tab_review, text=" Comments & orphans ")
-        self.nb.add(self.tab_strings, text=" Strings ")
+        self.nb.add(self.tab_overview, text="Overview")
+        self.nb.add(self.tab_entities, text="Entities")
+        self.nb.add(self.tab_geometry, text="Geometry")
+        self.nb.add(self.tab_pmi, text="PMI / GD&T")
+        self.nb.add(self.tab_audit, text="File audit")
+        self.nb.add(self.tab_review, text="Comments & orphans")
+        self.nb.add(self.tab_strings, text="Strings")
 
-        self.status = ttk.Label(self, anchor="w", padding=(8, 2))
+        self.status = ttk.Label(self, anchor="w", style="Status.TLabel")
         self.status.pack(fill="x", side="bottom")
 
     def _about(self):
         messagebox.showinfo(
             "About " + APP_TITLE,
             "STEP Inspector\n\n"
-            "Reviews STEP (ISO 10303-21) files for proprietary information.\n"
-            "Every byte of the file is classified; anything not consumed\n"
-            "into the data model is shown as orphaned data.\n\n"
-            "Second-reader cross-check powered by the steptools library\n"
-            "(STEP Tools, Inc.) when a license is available.")
+            "Reviews STEP (ISO 10303-21 / AP203/214/242) files for\n"
+            "proprietary information.  Every byte of the file is classified;\n"
+            "anything not consumed into the data model is shown as orphaned\n"
+            "data.  Geometry math is vectorized with NumPy.\n\n"
+            "Schema recognition and the second-reader cross-check are powered\n"
+            "by the steptools library (STEP Tools, Inc.) when a license is\n"
+            "available.")
 
     # ------------------------------------------------------------- loading
     def open_dialog(self):
@@ -163,24 +212,27 @@ class InspectorApp(tk.Tk):
                  f"{res.total_lines} lines, {res.total_bytes} bytes")
         ok = res.verify_coverage()
         orphans = len(res.orphan_spans())
+        pal = self.pal
         if not ok:
+            bg, fg = pal.badge_danger
             self.lbl_cov.config(text="✗ COVERAGE FAILURE — parser gap",
-                                bg="#c62828", fg="white")
+                                bg=bg, fg=fg)
         elif orphans:
+            bg, fg = pal.badge_warn
             self.lbl_cov.config(
                 text=f"⚠ every byte read — {orphans} orphaned span(s) and "
                      f"{len(res.comments)} comment(s) need review",
-                bg="#ef6c00", fg="white")
+                bg=bg, fg=fg)
         elif res.comments:
+            bg, fg = pal.badge_caution
             self.lbl_cov.config(
                 text=f"⚠ every byte read — {len(res.comments)} comment(s) "
-                     "need review", bg="#f9a825", fg="black")
+                     "need review", bg=bg, fg=fg)
         else:
+            bg, fg = pal.badge_good
             self.lbl_cov.config(text="✓ every byte read and consumed",
-                                bg="#2e7d32", fg="white")
-        for tab in (self.tab_overview, self.tab_entities, self.tab_geometry,
-                    self.tab_pmi, self.tab_audit, self.tab_review,
-                    self.tab_strings):
+                                bg=bg, fg=fg)
+        for tab in self.tabs:
             tab.populate()
         self.status.config(
             text=f"Loaded. {nrev} item(s) flagged for proprietary-information"
@@ -217,20 +269,25 @@ class InspectorApp(tk.Tk):
 
 class OverviewTab(ttk.Frame):
     def __init__(self, master, app: InspectorApp):
-        super().__init__(master, padding=8)
+        super().__init__(master, padding=12)
         self.app = app
         self.text = tk.Text(self, wrap="word", state="disabled",
-                            font=("TkFixedFont", 10), relief="flat",
-                            background=self.winfo_toplevel()["background"])
+                            font=(app.fonts["mono"], 10), relief="flat",
+                            padx=10, pady=8, spacing1=1)
         ys = ttk.Scrollbar(self, command=self.text.yview)
         self.text.configure(yscrollcommand=ys.set)
         ys.pack(side="right", fill="y")
         self.text.pack(fill="both", expand=True)
-        self.text.tag_configure("h", font=("TkDefaultFont", 11, "bold"),
-                                spacing1=10, spacing3=4)
-        self.text.tag_configure("k", font=("TkFixedFont", 10, "bold"))
-        self.text.tag_configure("warn", foreground="#c62828")
-        self.text.tag_configure("good", foreground="#2e7d32")
+
+    def restyle(self, pal):
+        theme.style_text(self.text, pal, flat_bg=True)
+        ui = self.app.fonts["ui"]
+        self.text.tag_configure("h", font=(ui, 12, "bold"),
+                                foreground=pal.accent, spacing1=12, spacing3=5)
+        self.text.tag_configure("k", font=(self.app.fonts["mono"], 10, "bold"))
+        self.text.tag_configure("warn", foreground=pal.danger)
+        self.text.tag_configure("good", foreground=pal.good)
+        self.text.tag_configure("dim", foreground=pal.text_dim)
 
     def populate(self):
         res, st = self.app.res, self.app.stinfo
@@ -381,6 +438,14 @@ class EntitiesTab(ttk.Frame):
 
         self._type_nodes: dict[str, str] = {}
         self._placeholders: set[str] = set()
+
+    def restyle(self, pal):
+        for t in (self.raw, self.stview):
+            theme.style_text(t, pal)
+        theme.style_listbox(self.usedby, pal)
+        self.attrs.tag_configure("ref", foreground=pal.accent)
+        self.attrs.tag_configure("missing", foreground=pal.danger)
+        self.tree.tag_configure("type", foreground=pal.text)
 
     # -- tree construction ---------------------------------------------------
     def populate(self):
@@ -581,9 +646,9 @@ class GeometryTab(ttk.Frame):
     def __init__(self, master, app: InspectorApp):
         super().__init__(master)
         self.app = app
-        bar = ttk.Frame(self, padding=4)
+        bar = ttk.Frame(self, style="Toolbar.TFrame", padding=(8, 6))
         bar.pack(fill="x")
-        ttk.Button(bar, text="Fit view",
+        ttk.Button(bar, text="Fit view", style="Accent.TButton",
                    command=lambda: self.viewer.fit()).pack(side="left")
         self.vars = {}
         for layer, label in (("edges", "Edges/curves"),
@@ -593,21 +658,34 @@ class GeometryTab(ttk.Frame):
             v = tk.BooleanVar(value=True)
             self.vars[layer] = v
             ttk.Checkbutton(
-                bar, text=label, variable=v,
+                bar, text=label, variable=v, style="Toolbar.TCheckbutton",
                 command=lambda l=layer, v=v: self.viewer.set_visible(
-                    l, v.get())).pack(side="left", padx=6)
-        self.stats = ttk.Label(bar, text="")
+                    l, v.get())).pack(side="left", padx=8)
+        self.stats = ttk.Label(bar, style="Toolbar.TLabel", text="")
         self.stats.pack(side="right")
-        self.viewer = Viewer3D(self)
+        self.viewer = Viewer3D(self, palette=app.pal)
         self.viewer.pack(fill="both", expand=True)
-        legend = ttk.Frame(self, padding=(6, 2))
-        legend.pack(fill="x")
-        ttk.Label(legend, text="Drag: rotate   Right-drag: pan   "
-                               "Wheel: zoom    ").pack(side="left")
-        for kind, color in KIND_COLORS.items():
-            f = tk.Frame(legend, width=10, height=10, bg=color)
-            f.pack(side="left", padx=(8, 2))
-            ttk.Label(legend, text=KIND_LABELS[kind]).pack(side="left")
+        self.legend = ttk.Frame(self, style="Toolbar.TFrame", padding=(8, 5))
+        self.legend.pack(fill="x")
+        self._swatches = []
+
+    def restyle(self, pal):
+        for child in self.legend.winfo_children():
+            child.destroy()
+        self._swatches = []
+        ttk.Label(self.legend, style="Toolbar.TLabel",
+                  text="Drag rotate · Right-drag pan · Wheel zoom    ").pack(
+            side="left")
+        for kind, color in pal.kind_colors().items():
+            if kind == "ellipse":           # shares the circle swatch
+                continue
+            sw = tk.Frame(self.legend, width=12, height=12, bg=color)
+            sw.pack(side="left", padx=(10, 3))
+            self._swatches.append(sw)
+            ttk.Label(self.legend, style="Toolbar.TLabel",
+                      text=KIND_LABELS[kind]).pack(side="left")
+        self.stats.configure(style="Toolbar.TLabel")
+        self.viewer.apply_palette(pal)
 
     def populate(self):
         wire = self.app.wire
@@ -644,17 +722,23 @@ class PMITab(ttk.Frame):
                               "'Other PMI-related items' — nothing is hidden. "
                               "Double-click an item to open it in the "
                               "Entities tab."))
+        self.top = top
         top.pack(fill="x")
         self.tree = ttk.Treeview(self, show="tree", selectmode="browse")
         ys = ttk.Scrollbar(self, command=self.tree.yview)
         self.tree.configure(yscrollcommand=ys.set)
         ys.pack(side="right", fill="y")
         self.tree.pack(fill="both", expand=True)
-        self.tree.tag_configure("cat", font=("TkDefaultFont", 10, "bold"))
-        self.tree.tag_configure("uninterp", foreground="#8a4baf")
         self.tree.bind("<Double-1>", self._open_entity)
-        self.footer = ttk.Label(self, padding=(8, 4), anchor="w")
+        self.footer = ttk.Label(self, style="Hint.TLabel",
+                                padding=(10, 5), anchor="w")
         self.footer.pack(fill="x", side="bottom")
+
+    def restyle(self, pal):
+        self.top.configure(style="Hint.TLabel")
+        self.tree.tag_configure("cat", font=(self.app.fonts["ui"], 10, "bold"),
+                                foreground=pal.accent)
+        self.tree.tag_configure("uninterp", foreground=pal.warn)
 
     def populate(self):
         self.tree.delete(*self.tree.get_children())
@@ -703,19 +787,12 @@ class AuditTab(ttk.Frame):
     def __init__(self, master, app: InspectorApp):
         super().__init__(master)
         self.app = app
-        bar = ttk.Frame(self, padding=4)
-        bar.pack(fill="x")
-        ttk.Button(bar, text="Next review item ▼",
-                   command=self.next_review).pack(side="left")
-        for label, color in SPAN_LEGEND:
-            f = tk.Frame(bar, width=12, height=12, bg=color,
-                         relief="solid", borderwidth=1)
-            f.pack(side="left", padx=(10, 3))
-            ttk.Label(bar, text=label).pack(side="left")
+        self.bar = ttk.Frame(self, style="Toolbar.TFrame", padding=(8, 6))
+        self.bar.pack(fill="x")
         body = ttk.Frame(self)
         body.pack(fill="both", expand=True)
-        self.text = tk.Text(body, wrap="none", font=("TkFixedFont", 9),
-                            state="disabled")
+        self.text = tk.Text(body, wrap="none", font=(app.fonts["mono"], 10),
+                            state="disabled", padx=6, pady=4)
         ys = ttk.Scrollbar(body, command=self.text.yview)
         xs = ttk.Scrollbar(body, orient="horizontal",
                            command=self.text.xview)
@@ -723,15 +800,33 @@ class AuditTab(ttk.Frame):
         ys.pack(side="right", fill="y")
         xs.pack(side="bottom", fill="x")
         self.text.pack(fill="both", expand=True)
-        for kind, style in SPAN_TAG_STYLE.items():
-            self.text.tag_configure("k_" + kind.value, **style)
-        self.text.tag_configure("k_orphan", background="#ffd2d2",
-                                foreground="#7f0000")
-        self.text.tag_configure("lineno", foreground="#999999",
-                                background="#f4f4f4")
         self.text.bind("<Double-1>", self._jump_entity)
         self._review_marks: list[str] = []
         self._review_pos = 0
+
+    def restyle(self, pal):
+        for child in self.bar.winfo_children():
+            child.destroy()
+        ttk.Button(self.bar, text="Next review item ▼", style="Accent.TButton",
+                   command=self.next_review).pack(side="left")
+        for label, key in SPAN_LEGEND:
+            sw = tk.Frame(self.bar, width=13, height=13,
+                          bg=pal.span_backgrounds()[key],
+                          highlightbackground=pal.border, highlightthickness=1)
+            sw.pack(side="left", padx=(12, 3))
+            ttk.Label(self.bar, style="Toolbar.TLabel", text=label).pack(
+                side="left")
+        theme.style_text(self.text, pal)
+        for key, bg in pal.span_backgrounds().items():
+            self.text.tag_configure("k_" + key, background=bg,
+                                    foreground=pal.text)
+        self.text.tag_configure("k_orphan", background=pal.span_orphan,
+                                foreground=pal.danger)
+        self.text.tag_configure("k_comment", background=pal.span_comment,
+                                foreground=pal.comment)
+        self.text.tag_configure("lineno", foreground=pal.text_dim,
+                                background=pal.panel_alt)
+        self.text.tag_configure("whitespace", foreground=pal.text)
 
     def populate(self):
         res = self.app.res
@@ -814,14 +909,15 @@ class ReviewTab(ttk.Frame):
     def __init__(self, master, app: InspectorApp):
         super().__init__(master)
         self.app = app
-        top = ttk.Label(self, padding=6, wraplength=1100, justify="left",
-                        text=("Everything below was read from the file but is "
-                              "NOT part of the consumed product data — or "
-                              "needs human eyes for another reason. Review "
-                              "each item for proprietary information. "
-                              "Double-click an item to see it in place in "
-                              "the file."))
-        top.pack(fill="x")
+        self.top = ttk.Label(
+            self, style="Hint.TLabel", padding=(10, 6), wraplength=1100,
+            justify="left",
+            text=("Everything below was read from the file but is "
+                  "NOT part of the consumed product data — or "
+                  "needs human eyes for another reason. Review "
+                  "each item for proprietary information. "
+                  "Double-click an item to see it in place in the file."))
+        self.top.pack(fill="x")
         cols = ("line", "kind", "what")
         self.tv = ttk.Treeview(self, columns=cols, show="headings")
         self.tv.heading("line", text="line")
@@ -833,13 +929,18 @@ class ReviewTab(ttk.Frame):
         self.tv.configure(yscrollcommand=ys.set)
         ys.pack(side="right", fill="y")
         self.tv.pack(fill="both", expand=True)
-        for sev, color in SEV_COLORS.items():
-            self.tv.tag_configure(sev, foreground=color)
         self.tv.bind("<Double-1>", self._jump)
         self.detail = tk.Text(self, height=7, wrap="word",
-                              font=("TkFixedFont", 9), state="disabled")
+                              font=(app.fonts["mono"], 10), state="disabled",
+                              padx=8, pady=6)
         self.detail.pack(fill="x", side="bottom")
         self.tv.bind("<<TreeviewSelect>>", self._show_detail)
+
+    def restyle(self, pal):
+        self.top.configure(style="Hint.TLabel")
+        for sev, color in pal.severity_colors().items():
+            self.tv.tag_configure(sev, foreground=color)
+        theme.style_text(self.detail, pal)
 
     def populate(self):
         self.tv.delete(*self.tv.get_children())
@@ -889,13 +990,14 @@ class StringsTab(ttk.Frame):
     def __init__(self, master, app: InspectorApp):
         super().__init__(master)
         self.app = app
-        bar = ttk.Frame(self, padding=4)
+        bar = ttk.Frame(self, style="Toolbar.TFrame", padding=(8, 6))
         bar.pack(fill="x")
-        ttk.Label(bar, text=("Every string literal in the file — the place "
-                             "proprietary text lives.  Search:")).pack(side="left")
+        ttk.Label(bar, style="Toolbar.TLabel",
+                  text=("Every string literal in the file — where "
+                        "proprietary text lives.  Search:")).pack(side="left")
         self.q = tk.StringVar()
         e = ttk.Entry(bar, textvariable=self.q, width=40)
-        e.pack(side="left", padx=6)
+        e.pack(side="left", padx=8)
         self.q.trace_add("write", lambda *_: self.populate())
         cols = ("line", "where", "text")
         self.tv = ttk.Treeview(self, columns=cols, show="headings")
@@ -909,8 +1011,10 @@ class StringsTab(ttk.Frame):
         self.tv.configure(yscrollcommand=ys.set)
         ys.pack(side="right", fill="y")
         self.tv.pack(fill="both", expand=True)
-        self.tv.tag_configure("dirty", foreground="#c62828")
         self.tv.bind("<Double-1>", self._jump)
+
+    def restyle(self, pal):
+        self.tv.tag_configure("dirty", foreground=pal.danger)
 
     def populate(self):
         self.tv.delete(*self.tv.get_children())
@@ -943,6 +1047,7 @@ class StringsTab(ttk.Frame):
                 self.app.goto_line(int(v[0]))
 
 
-def run(path: str | None = None, use_steptools: bool = True) -> None:
-    app = InspectorApp(path, use_steptools)
+def run(path: str | None = None, use_steptools: bool = True,
+        theme_name: str = "light") -> None:
+    app = InspectorApp(path, use_steptools, theme_name)
     app.mainloop()

@@ -68,6 +68,7 @@ class SteptoolsInfo:
     schema_name: str = ""
     schema_type: str = ""
     design_name: str = ""
+    arm_count: int = 0
     entity_ids: set = field(default_factory=set)
     type_counts: dict = field(default_factory=dict)   # AIM type -> count
     header_name: dict = field(default_factory=dict)
@@ -158,6 +159,12 @@ def load(path: str) -> SteptoolsInfo:
         return SteptoolsInfo(ok=False,
                              error="steptools returned no design object")
     info = SteptoolsInfo(ok=True, _design=design)
+    # ARM (application model) recognition so the entity view can show ARM
+    # types/attributes in addition to the raw AIM (EXPRESS) ones.
+    try:
+        info.arm_count = int(design.arm_recognize())
+    except Exception:
+        info.arm_count = 0
     try:
         info.schema_name = design.schema_name() or ""
         info.schema_type = str(design.schema_type().name)

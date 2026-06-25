@@ -86,7 +86,7 @@ triangulated sets) is rendered in the Geometry tab.
 * **Entities** — all instances grouped by type. Selecting one shows parsed
   attributes (double-click any `#ref` to follow it), reverse references
   ("referenced by"), the raw source text, and the steptools EXPRESS/ARM view.
-* **Geometry** — dependency-free 3D wireframe viewer: B-rep edges (lines,
+* **Geometry** — NumPy-backed 3D wireframe viewer: B-rep edges (lines,
   circles, ellipses, B-splines, trimmed curves), polylines, tessellated
   meshes and curve sets (AP242 tessellated PMI), vertices and free points. Drag to rotate, right-drag to pan,
   wheel to zoom. Curves the viewer can't evaluate are still drawn (as
@@ -114,20 +114,33 @@ sent to the review queue). The map ends with a byte total that must equal
 the file size, so the report itself is auditable. Omit the map for very
 large files with `--no-map` in CLI mode.
 
+## Light & dark themes
+
+The UI ships with a clean light theme (default) and a dark theme; switch at
+runtime from **View ▸ Theme**, or start in dark with `--theme dark`. The
+layout is identical in both.
+
+| Light | Dark |
+|---|---|
+| ![Light geometry](docs/geometry.png) | ![Dark geometry](docs/geometry_dark.png) |
+
 ## Install & run
 
-Requires Python 3.10+ with Tkinter (on Debian/Ubuntu: `apt install python3-tk`).
-
-```sh
-pip install steptools        # optional second reader (see note below)
-python -m step_inspector [path/to/file.step]
-```
-
-or install the package, which adds a `step-inspector` command:
+Requires Python 3.10+ with Tkinter (on Debian/Ubuntu: `apt install
+python3-tk`). Runtime dependencies — **NumPy** (geometry math) and
+**steptools** (schema recognition + second reader) — are installed
+automatically:
 
 ```sh
 pip install .
 step-inspector path/to/file.step
+```
+
+or run from a checkout without installing:
+
+```sh
+pip install numpy steptools
+python -m step_inspector [path/to/file.step]
 ```
 
 ### Headless report (CI / scripting)
@@ -138,15 +151,29 @@ python -m step_inspector --report file.step > file.audit.txt
 
 Exit code is `2` if byte-coverage verification fails, `0` otherwise.
 
-### About the steptools second reader
+### NumPy and steptools — who does what
 
-The `steptools` package is proprietary (STEP Tools, Inc.) and its read API
-requires a license key — free keys are issued at
-[steptools.com](https://www.steptools.com/). Set the key string in the
-`STEPTOOLS_LICENSE` environment variable. **Without it the application is
-fully functional**: the audit parser, geometry, and all review features are
-independent; only the cross-check panel reports that the second reader is
-unavailable. You can also skip it explicitly with `--no-steptools`.
+The two libraries are load-bearing, each for what it is good at:
+
+* **NumPy** does all the geometry math. Every polyline is an `(N, 3)` array;
+  circle/ellipse and B-spline (de Boor) sampling is vectorized, and the 3D
+  viewer projects the whole point set with one matrix multiply per frame.
+  This is necessary because the `steptools` package **has no general B-rep
+  tessellator or curve/surface evaluator** — it exposes the data model plus
+  small per-vector/per-matrix helpers (`step.Vec`, `step.Xform`), not a
+  "give me the mesh" call — so the sampling has to be done here regardless.
+* **steptools** (STEP Tools, Inc.) is the authoritative reader: schema
+  recognition, ARM (application model) recognition, header objects, and an
+  independent enumeration of every entity instance used to cross-check the
+  audit parser. Its read API requires a license key — free keys are issued
+  at [steptools.com](https://www.steptools.com/); set the key string in the
+  `STEPTOOLS_LICENSE` environment variable.
+
+If no steptools license is present the application is still fully
+functional — the audit parser, NumPy geometry, PMI extraction and all review
+features are independent of it; only the cross-check panel and the EXPRESS/ARM
+entity view report that the second reader is unavailable. Skip it explicitly
+with `--no-steptools`.
 
 ## Demo file
 
