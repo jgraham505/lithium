@@ -21,6 +21,9 @@ def main(argv=None) -> int:
     ap.add_argument("--no-map", action="store_true",
                     help="omit the span-by-span triage map from --report "
                          "output (keeps reports short for very large files)")
+    ap.add_argument("--theme", choices=("light", "dark"), default="light",
+                    help="initial GUI theme (default: light; toggle in View ▸ "
+                         "Theme)")
     args = ap.parse_args(argv)
 
     if args.report:
@@ -35,7 +38,8 @@ def main(argv=None) -> int:
         return 0 if res.verify_coverage() else 2
 
     from .gui.app import run
-    run(args.file, use_steptools=not args.no_steptools)
+    run(args.file, use_steptools=not args.no_steptools,
+        theme_name=args.theme)
     return 0
 
 

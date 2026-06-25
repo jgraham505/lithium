@@ -16,9 +16,10 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Computer Aided Design (CAD)",
     "Programming Language :: Python :: 3",
 ]
-
-[project.optional-dependencies]
-steptools = ["steptools"]
+dependencies = [
+    "numpy>=1.24",
+    "steptools>=20.0",
+]
 
 [project.gui-scripts]
 step-inspector = "step_inspector.__main__:main"
