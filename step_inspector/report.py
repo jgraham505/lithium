@@ -62,7 +62,7 @@ def _map_row(res: AuditResult, s) -> str:
 
 
 def build_report(res: AuditResult, st: SteptoolsInfo | None = None,
-                 include_map: bool = True) -> str:
+                 include_map: bool = True, occ_result=None) -> str:
     out: list[str] = []
     w = out.append
     w(RULE)
@@ -148,6 +148,27 @@ def build_report(res: AuditResult, st: SteptoolsInfo | None = None,
             if cc.only_in_steptools:
                 w(f"    seen only by steptools: "
                   f"{', '.join('#%d' % i for i in cc.only_in_steptools[:50])}")
+
+    # ---- OpenCASCADE shaded geometry (visualization) ---------------------------
+    if occ_result is not None:
+        w("")
+        w("SHADED GEOMETRY (OpenCASCADE — visualization only)")
+        if not occ_result.ok:
+            w(f"  not produced: {occ_result.error}")
+        else:
+            a = occ_result.acc
+            w(f"  faces meshed: {a.faces_meshed}/{a.faces_total}   "
+              f"solids: {a.solids}   shells: {a.shells}")
+            w(f"  triangles: {a.triangles}   nodes: {a.nodes}")
+            match = a.entities_parsed == len(res.entities)
+            w(f"  OpenCASCADE reader parsed {a.entities_parsed} entities; "
+              f"audit parser found {len(res.entities)} — "
+              + ("MATCH" if match else "MISMATCH (audit is authoritative)"))
+            if a.faces_no_triangulation:
+                w(f"  WARNING: {a.faces_no_triangulation} face(s) not "
+                  "tessellated")
+        w("  (Byte-level coverage is proven by the audit parser above; "
+          "OpenCASCADE only renders surfaces.)")
 
     # ---- review items --------------------------------------------------------
     w("")

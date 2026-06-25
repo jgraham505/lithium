@@ -86,11 +86,17 @@ triangulated sets) is rendered in the Geometry tab.
 * **Entities** — all instances grouped by type. Selecting one shows parsed
   attributes (double-click any `#ref` to follow it), reverse references
   ("referenced by"), the raw source text, and the steptools EXPRESS/ARM view.
-* **Geometry** — NumPy-backed 3D wireframe viewer: B-rep edges (lines,
-  circles, ellipses, B-splines, trimmed curves), polylines, tessellated
-  meshes and curve sets (AP242 tessellated PMI), vertices and free points. Drag to rotate, right-drag to pan,
-  wheel to zoom. Curves the viewer can't evaluate are still drawn (as
-  dashed chords) and counted — nothing is silently dropped.
+* **Geometry** — 3D viewer with two render modes (toggle in the toolbar):
+  * *Wireframe* (always available, NumPy): B-rep edges (lines, circles,
+    ellipses, B-splines, trimmed curves), polylines, tessellated meshes and
+    curve sets (AP242 tessellated PMI), vertices and free points. Curves the
+    sampler can't evaluate are still drawn as dashed chords and counted —
+    nothing is silently dropped.
+  * *Shaded solids* (when pythonocc-core is installed): true shaded surface
+    triangulation of the exact B-rep via OpenCASCADE — see
+    [Shaded surfaces (OpenCASCADE)](#shaded-surfaces-opencascade).
+
+  Drag to rotate, right-drag to pan, wheel to zoom.
 * **PMI / GD&T** — geometric tolerances, dimensions, datums, annotation
   text, saved views, and notes/properties in readable form (see
   [AP242, PMI and GD&T](#ap242-pmi-and-gdt)).
@@ -153,15 +159,11 @@ Exit code is `2` if byte-coverage verification fails, `0` otherwise.
 
 ### NumPy and steptools — who does what
 
-The two libraries are load-bearing, each for what it is good at:
+The two required libraries are load-bearing, each for what it is good at:
 
-* **NumPy** does all the geometry math. Every polyline is an `(N, 3)` array;
+* **NumPy** does the geometry math. Every polyline is an `(N, 3)` array;
   circle/ellipse and B-spline (de Boor) sampling is vectorized, and the 3D
   viewer projects the whole point set with one matrix multiply per frame.
-  This is necessary because the `steptools` package **has no general B-rep
-  tessellator or curve/surface evaluator** — it exposes the data model plus
-  small per-vector/per-matrix helpers (`step.Vec`, `step.Xform`), not a
-  "give me the mesh" call — so the sampling has to be done here regardless.
 * **steptools** (STEP Tools, Inc.) is the authoritative reader: schema
   recognition, ARM (application model) recognition, header objects, and an
   independent enumeration of every entity instance used to cross-check the
@@ -174,6 +176,53 @@ functional — the audit parser, NumPy geometry, PMI extraction and all review
 features are independent of it; only the cross-check panel and the EXPRESS/ARM
 entity view report that the second reader is unavailable. Skip it explicitly
 with `--no-steptools`.
+
+> Note on STEP Tools and meshing: the `steptools` binary does contain STEP
+> Tools' StixMesh B-rep faceter (`stix_mesh_make*`, the `RoseMesh*` classes),
+> but those are **C++ entry points not bound in the Python package** — so the
+> shaded surface view uses OpenCASCADE instead (below).
+
+## Shaded surfaces (OpenCASCADE)
+
+The wireframe view shows B-rep *edges*. For true shaded *surfaces* — exact
+solids tessellated and flat-shaded — STEP Inspector uses **OpenCASCADE** via
+the optional `pythonocc-core` package. Switch to it with the *Shaded solids*
+toggle on the Geometry tab.
+
+| Wireframe (NumPy) | Shaded solids (OpenCASCADE) |
+|---|---|
+| ![Wireframe](docs/geometry.png) | ![Shaded](docs/geometry_shaded.png) |
+
+`pythonocc-core` is a large, conda-only dependency (it is **not** on PyPI):
+
+```sh
+conda install -c conda-forge pythonocc-core
+```
+
+It is entirely optional: without it, the Geometry tab still works in
+wireframe mode and the rest of the app is unaffected (the *Shaded solids*
+toggle is simply disabled with a hint).
+
+### Coverage is still the audit parser's job — OpenCASCADE is accounted for
+
+OpenCASCADE has its own, *more permissive* STEP reader: it will load a file
+and merely print a "Fails Count" for syntax it dislikes. It therefore **must
+not** be treated as proof that the whole file was consumed — that guarantee
+stays with the byte-tiling audit parser. To keep OCC honest rather than a
+black box, STEP Inspector **accounts** for what it did and cross-checks it
+against the audit parser. The Overview tab and the (`--shaded`) report show,
+for example:
+
+```
+SHADED GEOMETRY (OpenCASCADE — visualization only)
+  faces meshed: 6/6   solids: 1   shells: 1
+  triangles: 12   nodes: 24
+  OpenCASCADE reader parsed 176 entities; audit parser found 176 — MATCH
+  (Byte-level coverage is proven by the audit parser above; OpenCASCADE only renders surfaces.)
+```
+
+Any face OpenCASCADE cannot tessellate, and any disagreement between its
+entity count and the audit parser's, is surfaced — never hidden.
 
 ## Demo file
 

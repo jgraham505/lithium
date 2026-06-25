@@ -64,6 +64,8 @@ class Palette:
     axis_y: str
     axis_z: str
     hud: str
+    surface: tuple        # base shaded-surface RGB (0-255)
+    surface_edge: str     # triangle edge color in shaded mode
     kind_line: str
     kind_curve: str
     kind_spline: str
@@ -114,6 +116,7 @@ LIGHT = Palette(
     canvas_bg="#1a1d24", grid="#2a2e38",
     vertex="#ffffff", free_point="#ffe07a",
     axis_x="#e06c60", axis_y="#7bc86c", axis_z="#6c9fe0", hud="#ff9d6b",
+    surface=(150, 170, 205), surface_edge="#0e1220",
     kind_line="#7fb2ff", kind_curve="#ffce6e", kind_spline="#9be08a",
     kind_polyline="#e58bff", kind_tess="#6fd6c4", kind_approx="#ff8f8f",
 )
@@ -136,6 +139,7 @@ DARK = Palette(
     canvas_bg="#15171c", grid="#262a33",
     vertex="#ffffff", free_point="#ffe07a",
     axis_x="#e8736a", axis_y="#85d178", axis_z="#7aa6e8", hud="#ffb07a",
+    surface=(126, 148, 184), surface_edge="#0a0c12",
     kind_line="#7fb2ff", kind_curve="#ffce6e", kind_spline="#9be08a",
     kind_polyline="#e58bff", kind_tess="#6fd6c4", kind_approx="#ff8f8f",
 )
@@ -193,6 +197,10 @@ def apply(root, style: ttk.Style, pal: Palette, fnt: dict) -> None:
                     foreground=pal.text_dim)
     style.configure("Toolbar.TCheckbutton", background=pal.raised)
     style.map("Toolbar.TCheckbutton", background=[("active", pal.raised)])
+    style.configure("Toolbar.TRadiobutton", background=pal.raised)
+    style.map("Toolbar.TRadiobutton", background=[("active", pal.raised)],
+              indicatorcolor=[("selected", pal.accent),
+                              ("!selected", pal.panel_alt)])
     style.configure("Banner.TFrame", background=pal.raised)
     style.configure("Banner.TLabel", background=pal.raised, foreground=pal.text)
     style.configure("Hint.TLabel", background=pal.window,

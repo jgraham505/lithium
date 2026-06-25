@@ -9,6 +9,7 @@ from collections import Counter
 from tkinter import filedialog, messagebox, ttk
 import tkinter as tk
 
+from .. import occ_backend as occ
 from .. import steptools_bridge as sb
 from ..geometry import extract_wireframe
 from ..pmi import CATEGORIES as PMI_CATEGORIES, extract_pmi
@@ -44,6 +45,8 @@ class InspectorApp(tk.Tk):
         self.stinfo: sb.SteptoolsInfo | None = None
         self.wire = None
         self.pmi = None
+        self.occ = None              # occ_backend.OccResult | None
+        self._occ_token = 0          # guards against stale async results
 
         # theming
         self.style = ttk.Style(self)
@@ -180,6 +183,8 @@ class InspectorApp(tk.Tk):
     def open_path(self, path: str):
         self.status.config(text=f"Reading {path} …")
         self.lbl_file.config(text=os.path.basename(path) + "  (loading…)")
+        self.occ = None
+        self._occ_token += 1
 
         def work():
             try:
@@ -220,13 +225,13 @@ class InspectorApp(tk.Tk):
         elif orphans:
             bg, fg = pal.badge_warn
             self.lbl_cov.config(
-                text=f"⚠ every byte read — {orphans} orphaned span(s) and "
+                text=f"▲ every byte read — {orphans} orphaned span(s) and "
                      f"{len(res.comments)} comment(s) need review",
                 bg=bg, fg=fg)
         elif res.comments:
             bg, fg = pal.badge_caution
             self.lbl_cov.config(
-                text=f"⚠ every byte read — {len(res.comments)} comment(s) "
+                text=f"▲ every byte read — {len(res.comments)} comment(s) "
                      "need review", bg=bg, fg=fg)
         else:
             bg, fg = pal.badge_good
@@ -237,6 +242,30 @@ class InspectorApp(tk.Tk):
         self.status.config(
             text=f"Loaded. {nrev} item(s) flagged for proprietary-information"
                  f" review — see 'Comments & orphans'.")
+        self._start_occ()
+
+    # ------------------------------------------------------- shaded backend
+    def _start_occ(self):
+        """Tessellate the B-rep with OpenCASCADE in the background."""
+        if self.res is None or not occ.available():
+            self.tab_geometry.occ_status()
+            return
+        path = self.res.path
+        token = self._occ_token
+        self.tab_geometry.occ_status(busy=True)
+
+        def work():
+            result = occ.load_and_mesh(path)
+            self.after(0, lambda: self._occ_ready(token, result))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _occ_ready(self, token, result):
+        if token != self._occ_token:
+            return               # a newer file was opened; ignore stale mesh
+        self.occ = result
+        self.tab_geometry.set_occ(result)
+        self.tab_overview.populate()
 
     # ------------------------------------------------------------- actions
     def export_report(self):
@@ -251,7 +280,7 @@ class InspectorApp(tk.Tk):
         if not path:
             return
         with open(path, "w", encoding="utf-8") as f:
-            f.write(build_report(self.res, self.stinfo))
+            f.write(build_report(self.res, self.stinfo, occ_result=self.occ))
         self.status.config(text=f"Report written to {path}")
 
     def goto_entity(self, eid: int):
@@ -361,6 +390,36 @@ class OverviewTab(ttk.Frame):
                     w("    only steptools: " +
                       ", ".join(f"#{i}" for i in cc.only_in_steptools[:30]),
                       "warn")
+
+        w("Shaded geometry — OpenCASCADE (visualization only)", "h")
+        r = self.app.occ
+        if not occ.available():
+            w("  pythonocc-core not installed; shaded surface view disabled. "
+              "Wireframe geometry and the audit above are unaffected.", "dim")
+        elif r is None:
+            w("  tessellating in the background…", "dim")
+        elif not r.ok:
+            w(f"  {r.error}", "dim")
+        else:
+            a = r.acc
+            w(f"  OpenCASCADE meshed {a.faces_meshed}/{a.faces_total} faces "
+              f"({a.solids} solid(s), {a.shells} shell(s)) into "
+              f"{a.triangles:,} triangles.")
+            match = a.entities_parsed == len(res.entities)
+            if match:
+                w(f"  ✓ Its STEP reader independently parsed "
+                  f"{a.entities_parsed} entities — same count as the audit "
+                  "parser.", "good")
+            else:
+                w(f"  ▲ Its STEP reader parsed {a.entities_parsed} entities vs "
+                  f"{len(res.entities)} found by the audit parser — the audit "
+                  "parser is authoritative for coverage.", "warn")
+            if a.faces_no_triangulation:
+                w(f"  ▲ {a.faces_no_triangulation} face(s) could not be "
+                  "tessellated by OpenCASCADE (shown only in wireframe).",
+                  "warn")
+            w("  Note: byte-level coverage is proven by the audit parser "
+              "above; OpenCASCADE is used only to render surfaces.", "dim")
 
         sev = Counter(a.severity for a in res.attention)
         w("Review queue", "h")
@@ -557,7 +616,7 @@ class EntitiesTab(ttk.Frame):
         root = self.attrs.insert("", "end", text=f"#{eid} {e.type_name}",
                                  values=("",), open=True)
         if e.parse_error:
-            self.attrs.insert(root, "end", text="⚠ parse error",
+            self.attrs.insert(root, "end", text="▲ parse error",
                               values=(e.parse_error,))
         for rec in e.records:
             parent = root
@@ -617,7 +676,7 @@ class EntitiesTab(ttk.Frame):
                                      values=(v.name,), open=True)
             self._add_value(node, "value", v.value, depth + 1)
         elif isinstance(v, Str):
-            extra = "" if v.clean else "   ⚠ raw: " + v.raw
+            extra = "" if v.clean else "   ▲ raw: " + v.raw
             self.attrs.insert(parent, "end", text=label,
                               values=(f"'{v.decoded}'{extra}",))
         else:
@@ -650,6 +709,16 @@ class GeometryTab(ttk.Frame):
         bar.pack(fill="x")
         ttk.Button(bar, text="Fit view", style="Accent.TButton",
                    command=lambda: self.viewer.fit()).pack(side="left")
+        # render-mode toggle: wireframe (audit/NumPy) vs shaded (OpenCASCADE)
+        self.mode_var = tk.StringVar(value="wire")
+        ttk.Radiobutton(bar, text="Wireframe", value="wire",
+                        variable=self.mode_var, style="Toolbar.TRadiobutton",
+                        command=self._on_mode).pack(side="left", padx=(14, 2))
+        self.shaded_rb = ttk.Radiobutton(
+            bar, text="Shaded solids", value="shaded", variable=self.mode_var,
+            style="Toolbar.TRadiobutton", command=self._on_mode,
+            state="disabled")
+        self.shaded_rb.pack(side="left", padx=(2, 14))
         self.vars = {}
         for layer, label in (("edges", "Edges/curves"),
                              ("vertices", "Vertices"),
@@ -667,29 +736,96 @@ class GeometryTab(ttk.Frame):
         self.viewer.pack(fill="both", expand=True)
         self.legend = ttk.Frame(self, style="Toolbar.TFrame", padding=(8, 5))
         self.legend.pack(fill="x")
+        self.occ_lbl = ttk.Label(self.legend, style="Toolbar.TLabel", text="")
+        self.occ_lbl.pack(side="right")
+        self.legend_inner = ttk.Frame(self.legend, style="Toolbar.TFrame")
+        self.legend_inner.pack(side="left")
         self._swatches = []
 
+    # -- shaded (OpenCASCADE) backend --------------------------------------
+    def set_occ(self, result):
+        """Receive the OpenCASCADE mesh/accounting result."""
+        if result is not None and result.ok and not result.mesh.empty:
+            self.viewer.set_mesh(result.mesh)
+            self.shaded_rb.configure(state="normal")
+        else:
+            self.viewer.set_mesh(None)
+            self.shaded_rb.configure(state="disabled")
+            if self.mode_var.get() == "shaded":
+                self.mode_var.set("wire")
+                self.viewer.set_mode("wire")
+        self.occ_status()
+
+    def occ_status(self, busy: bool = False):
+        if not occ.available():
+            self.occ_lbl.config(
+                text="Shaded: install pythonocc-core (conda) for OpenCASCADE "
+                     "surfaces")
+            return
+        if busy:
+            self.occ_lbl.config(text="Shaded: tessellating with OpenCASCADE …")
+            return
+        r = self.app.occ
+        if r is None:
+            self.occ_lbl.config(text="")
+        elif not r.ok:
+            self.occ_lbl.config(text=f"Shaded: {r.error[:90]}")
+        else:
+            a = r.acc
+            self.occ_lbl.config(
+                text=f"OpenCASCADE: {a.faces_meshed}/{a.faces_total} faces · "
+                     f"{a.triangles:,} triangles · parsed {a.entities_parsed} "
+                     f"entities")
+
+    def _on_mode(self):
+        self.viewer.set_mode(
+            "shaded" if self.mode_var.get() == "shaded" else "wire")
+        self.restyle(self.app.pal)
+        self.populate()
+
     def restyle(self, pal):
-        for child in self.legend.winfo_children():
+        for child in self.legend_inner.winfo_children():
             child.destroy()
         self._swatches = []
-        ttk.Label(self.legend, style="Toolbar.TLabel",
+        ttk.Label(self.legend_inner, style="Toolbar.TLabel",
                   text="Drag rotate · Right-drag pan · Wheel zoom    ").pack(
             side="left")
-        for kind, color in pal.kind_colors().items():
-            if kind == "ellipse":           # shares the circle swatch
-                continue
-            sw = tk.Frame(self.legend, width=12, height=12, bg=color)
+        if self.mode_var.get() == "shaded":
+            sw = tk.Frame(self.legend_inner, width=12, height=12,
+                          bg="#%02x%02x%02x" % pal.surface)
             sw.pack(side="left", padx=(10, 3))
             self._swatches.append(sw)
-            ttk.Label(self.legend, style="Toolbar.TLabel",
-                      text=KIND_LABELS[kind]).pack(side="left")
+            ttk.Label(self.legend_inner, style="Toolbar.TLabel",
+                      text="OpenCASCADE shaded B-rep surfaces").pack(
+                side="left")
+        else:
+            for kind, color in pal.kind_colors().items():
+                if kind == "ellipse":           # shares the circle swatch
+                    continue
+                sw = tk.Frame(self.legend_inner, width=12, height=12,
+                              bg=color)
+                sw.pack(side="left", padx=(10, 3))
+                self._swatches.append(sw)
+                ttk.Label(self.legend_inner, style="Toolbar.TLabel",
+                          text=KIND_LABELS[kind]).pack(side="left")
         self.stats.configure(style="Toolbar.TLabel")
+        self.occ_lbl.configure(style="Toolbar.TLabel")
         self.viewer.apply_palette(pal)
+        self.occ_status()
 
     def populate(self):
         wire = self.app.wire
         self.viewer.set_model(wire)
+        if self.mode_var.get() == "shaded":
+            r = self.app.occ
+            if r is not None and r.ok:
+                a = r.acc
+                self.stats.config(
+                    text=f"{a.triangles:,} triangles · {a.faces_meshed} "
+                         f"faces · {a.solids} solid(s)")
+            else:
+                self.stats.config(text="")
+            return
         if wire is None:
             self.stats.config(text="")
             return
@@ -699,7 +835,7 @@ class GeometryTab(ttk.Frame):
         if wire.free_points:
             parts.append(f"{len(wire.free_points)} free points")
         approx = kinds.get("approx", 0)
-        note = ("   ⚠ some curves drawn as straight chords"
+        note = ("   ▲ some curves drawn as straight chords"
                 if approx else "")
         self.stats.config(text=", ".join(parts) + note if parts
                           else "no wireframe geometry found")
