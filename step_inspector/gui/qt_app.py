@@ -709,13 +709,26 @@ class GeometryTab(QtWidgets.QWidget):
                 l, on))
             bl.addWidget(cb)
             self.layer_boxes[layer] = cb
+        bl.addSpacing(12)
+        self.btn_measure = QtWidgets.QPushButton("Measure")
+        self.btn_measure.setCheckable(True)
+        self.btn_measure.setEnabled(False)
+        self.btn_measure.toggled.connect(self._on_measure)
+        bl.addWidget(self.btn_measure)
         bl.addStretch(1)
         self.stats = QtWidgets.QLabel("")
         bl.addWidget(self.stats)
         lay.addWidget(bar)
 
+        split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self.viewer = Viewer3D(win.pal)
-        lay.addWidget(self.viewer, 1)
+        self.viewer.pick_changed.connect(self._update_measure_panel)
+        split.addWidget(self.viewer)
+        self.measure_panel = self._build_measure_panel()
+        split.addWidget(self.measure_panel)
+        split.setSizes([1040, 280])
+        self.measure_panel.setVisible(False)
+        lay.addWidget(split, 1)
 
         foot = QtWidgets.QWidget()
         foot.setObjectName("Toolbar")
@@ -724,6 +737,72 @@ class GeometryTab(QtWidgets.QWidget):
         self.occ_lbl = QtWidgets.QLabel("")
         lay.addWidget(foot)
         self._build_legend()
+
+    # -- measurement panel --------------------------------------------------
+    def _build_measure_panel(self):
+        box = QtWidgets.QGroupBox("Measure")
+        v = QtWidgets.QVBoxLayout(box)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("Pick:"))
+        self.pick_combo = QtWidgets.QComboBox()
+        self.pick_combo.addItems(["Auto", "Points", "Edges", "Faces"])
+        self.pick_combo.currentTextChanged.connect(
+            lambda t: self.viewer.set_pick_filter(
+                {"Auto": "auto", "Points": "vertex", "Edges": "edge",
+                 "Faces": "face"}[t]))
+        row.addWidget(self.pick_combo, 1)
+        v.addLayout(row)
+        hint = QtWidgets.QLabel(
+            "Click two items — point, edge or face — to measure the exact "
+            "minimum distance between them (OpenCASCADE). Drag still rotates.")
+        hint.setWordWrap(True)
+        hint.setObjectName("Hint")
+        v.addWidget(hint)
+        self.measure_text = QtWidgets.QLabel("Measurement mode off.")
+        self.measure_text.setWordWrap(True)
+        self.measure_text.setTextInteractionFlags(
+            QtCore.Qt.TextSelectableByMouse)
+        self.measure_text.setAlignment(QtCore.Qt.AlignTop)
+        v.addWidget(self.measure_text, 1)
+        clear = QtWidgets.QPushButton("Clear")
+        clear.clicked.connect(lambda: self.viewer.clear_measure())
+        v.addWidget(clear)
+        return box
+
+    def _on_measure(self, on):
+        self.viewer.set_measure_mode(on)
+        self.measure_panel.setVisible(on)
+        self.btn_measure.setText("Measure: ON" if on else "Measure")
+        self._update_measure_panel()
+
+    def _update_measure_panel(self):
+        pal = self.win.pal
+        sel = self.viewer.selection
+        r = self.viewer.measure_result
+        rows = []
+        for i, s in enumerate(sel, 1):
+            rows.append(f"<b>{i}. {s.kind}</b> — {s.info}")
+        if not sel:
+            rows.append(f"<span style='color:{pal.text_dim}'>click an item…"
+                        "</span>")
+        elif len(sel) == 1:
+            rows.append(f"<span style='color:{pal.text_dim}'>click a second "
+                        "item…</span>")
+        if r is not None:
+            if r.ok:
+                dx, dy, dz = r.delta
+                rows.append("<hr>")
+                rows.append(f"<b style='font-size:16px;color:{pal.accent}'>"
+                            f"distance {r.distance:.6g}</b>")
+                rows.append(f"Δ = ({dx:.4g}, {dy:.4g}, {dz:.4g})")
+                rows.append(f"<span style='color:{pal.text_dim}'>from "
+                            f"({r.p1[0]:.4g}, {r.p1[1]:.4g}, {r.p1[2]:.4g})"
+                            f"<br>to ({r.p2[0]:.4g}, {r.p2[1]:.4g}, "
+                            f"{r.p2[2]:.4g})</span>")
+            else:
+                rows.append(f"<span style='color:{pal.danger}'>measure failed: "
+                            f"{r.error}</span>")
+        self.measure_text.setText("<br>".join(rows))
 
     def _build_legend(self):
         while self.foot_lay.count():
@@ -768,6 +847,15 @@ class GeometryTab(QtWidgets.QWidget):
             self.rb_shaded.setEnabled(False)
             if self.rb_shaded.isChecked():
                 self.rb_wire.setChecked(True)
+        can_measure = (result is not None and result.ok
+                       and not result.pick.empty)
+        self.viewer.set_pick_model(result.pick if can_measure else None)
+        self.btn_measure.setEnabled(can_measure)
+        if not can_measure and self.btn_measure.isChecked():
+            self.btn_measure.setChecked(False)
+        self.btn_measure.setToolTip(
+            "" if can_measure else
+            "Measurement needs OpenCASCADE surface data (pythonocc-core).")
         self.occ_status()
 
     def occ_status(self, busy=False):
