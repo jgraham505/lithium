@@ -38,25 +38,41 @@ def _try_import():
         from OCC.Core.STEPControl import STEPControl_Reader
         from OCC.Core.IFSelect import IFSelect_RetDone
         from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
-        from OCC.Core.TopExp import TopExp_Explorer
+        from OCC.Core.TopExp import TopExp_Explorer, topexp
         from OCC.Core.TopAbs import (TopAbs_FACE, TopAbs_REVERSED,
-                                     TopAbs_SOLID, TopAbs_SHELL)
+                                     TopAbs_SOLID, TopAbs_SHELL,
+                                     TopAbs_EDGE, TopAbs_VERTEX)
         from OCC.Core.TopLoc import TopLoc_Location
+        from OCC.Core.TopTools import TopTools_IndexedMapOfShape
         from OCC.Core.BRep import BRep_Tool
         from OCC.Core.TopoDS import topods
+        from OCC.Core.BRepExtrema import BRepExtrema_DistShapeShape
+        from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
+        from OCC.Core.GCPnts import GCPnts_QuasiUniformDeflection
+        from OCC.Core.GProp import GProp_GProps
+        from OCC.Core.BRepGProp import brepgprop
         AVAILABLE = True
         return {
             "STEPControl_Reader": STEPControl_Reader,
             "IFSelect_RetDone": IFSelect_RetDone,
             "BRepMesh_IncrementalMesh": BRepMesh_IncrementalMesh,
             "TopExp_Explorer": TopExp_Explorer,
+            "topexp": topexp,
             "TopAbs_FACE": TopAbs_FACE,
             "TopAbs_REVERSED": TopAbs_REVERSED,
             "TopAbs_SOLID": TopAbs_SOLID,
             "TopAbs_SHELL": TopAbs_SHELL,
+            "TopAbs_EDGE": TopAbs_EDGE,
+            "TopAbs_VERTEX": TopAbs_VERTEX,
             "TopLoc_Location": TopLoc_Location,
+            "TopTools_IndexedMapOfShape": TopTools_IndexedMapOfShape,
             "BRep_Tool": BRep_Tool,
             "topods": topods,
+            "BRepExtrema_DistShapeShape": BRepExtrema_DistShapeShape,
+            "BRepAdaptor_Curve": BRepAdaptor_Curve,
+            "GCPnts_QuasiUniformDeflection": GCPnts_QuasiUniformDeflection,
+            "GProp_GProps": GProp_GProps,
+            "brepgprop": brepgprop,
         }
     except Exception as e:        # pragma: no cover - depends on environment
         AVAILABLE = False
@@ -90,6 +106,46 @@ class ShadedMesh:
 
 
 @dataclass
+class PickShape:
+    """A pickable B-rep sub-shape with screen geometry and exact handle."""
+    kind: str                 # "vertex" | "edge" | "face"
+    index: int                # position within its kind list
+    pts: np.ndarray           # (K, 3) world points used for screen picking
+    shape: object             # the TopoDS sub-shape (exact distance source)
+    info: str                 # human label (coords / length / area)
+
+
+@dataclass
+class PickModel:
+    vertices: list = field(default_factory=list)   # [PickShape]
+    edges: list = field(default_factory=list)
+    faces: list = field(default_factory=list)      # aligned with face_of_tri
+    note: str = ""
+
+    @property
+    def empty(self) -> bool:
+        return not (self.vertices or self.edges or self.faces)
+
+
+@dataclass
+class MeasureResult:
+    ok: bool
+    kind_a: str = ""
+    kind_b: str = ""
+    info_a: str = ""
+    info_b: str = ""
+    distance: float = 0.0
+    p1: tuple = (0.0, 0.0, 0.0)     # closest point on shape A
+    p2: tuple = (0.0, 0.0, 0.0)     # closest point on shape B
+    error: str = ""
+
+    @property
+    def delta(self) -> tuple:
+        return (self.p2[0] - self.p1[0], self.p2[1] - self.p1[1],
+                self.p2[2] - self.p1[2])
+
+
+@dataclass
 class OccAccounting:
     """What OpenCASCADE's reader/mesher did with the file."""
     entities_parsed: int = 0          # STEP entities OCC's reader loaded
@@ -115,6 +171,7 @@ class OccResult:
     error: str = ""
     mesh: ShadedMesh = field(default_factory=ShadedMesh)
     acc: OccAccounting = field(default_factory=OccAccounting)
+    pick: PickModel = field(default_factory=PickModel)
 
 
 def available() -> bool:
@@ -191,11 +248,13 @@ def load_and_mesh(path: str, lin_deflection: float = 0.0,
     verts: list = []
     tris: list = []
     face_ids: list = []
+    face_shapes: list = []          # TopoDS_Face per fidx (aligned to face_ids)
     base = 0
     fidx = 0
     exp = TopExp_Explorer(shape, TopAbs_FACE)
     while exp.More():
         face = topods.Face(exp.Current())
+        face_shapes.append(face)
         acc.faces_total += 1
         loc = TopLoc_Location()
         tri = BRep_Tool.Triangulation(face, loc)
@@ -235,12 +294,115 @@ def load_and_mesh(path: str, lin_deflection: float = 0.0,
     acc.triangles = len(mesh.triangles)
     acc.nodes = len(mesh.vertices)
 
+    pick = _build_pick(shape, face_shapes, m)
+
     if mesh.empty:
         return OccResult(ok=False,
                          error="OpenCASCADE read the file but produced no "
                                "triangulated surfaces (no solid/shell B-rep "
                                "to mesh).", mesh=mesh, acc=acc)
-    return OccResult(ok=True, mesh=mesh, acc=acc)
+    return OccResult(ok=True, mesh=mesh, acc=acc, pick=pick)
+
+
+# ---------------------------------------------------------------------------
+# Pickable sub-shapes and exact measurement
+# ---------------------------------------------------------------------------
+
+MAX_PICK_FACES = 8000          # skip building the pick model above this
+MAX_PICK_EDGES = 40000
+
+
+def _build_pick(shape, face_shapes, m) -> PickModel:
+    """Index vertices/edges/faces with screen geometry and exact handles."""
+    pm = PickModel()
+    topexp = m["topexp"]
+    BRep_Tool = m["BRep_Tool"]
+    topods = m["topods"]
+    IndexedMap = m["TopTools_IndexedMapOfShape"]
+    TopAbs_EDGE = m["TopAbs_EDGE"]
+    TopAbs_VERTEX = m["TopAbs_VERTEX"]
+    GProp = m["GProp_GProps"]
+    brepgprop = m["brepgprop"]
+
+    # faces (aligned with mesh.face_of_tri indexing)
+    if len(face_shapes) > MAX_PICK_FACES:
+        pm.note = (f"model has {len(face_shapes)} faces; measurement index "
+                   "skipped to stay responsive")
+        return pm
+    for i, face in enumerate(face_shapes):
+        try:
+            g = GProp()
+            brepgprop.SurfaceProperties(face, g)
+            info = f"area {g.Mass():.4g}"
+        except Exception:
+            info = "face"
+        pm.faces.append(PickShape("face", i, np.empty((0, 3)), face, info))
+
+    # unique vertices
+    vmap = IndexedMap()
+    topexp.MapShapes(shape, TopAbs_VERTEX, vmap)
+    for i in range(1, vmap.Size() + 1):
+        v = topods.Vertex(vmap.FindKey(i))
+        try:
+            p = BRep_Tool.Pnt(v)
+            xyz = np.array([[p.X(), p.Y(), p.Z()]])
+            info = f"({p.X():.4g}, {p.Y():.4g}, {p.Z():.4g})"
+        except Exception:
+            continue
+        pm.vertices.append(PickShape("vertex", len(pm.vertices), xyz, v, info))
+
+    # unique edges (discretized for screen picking)
+    emap = IndexedMap()
+    topexp.MapShapes(shape, TopAbs_EDGE, emap)
+    if emap.Size() <= MAX_PICK_EDGES:
+        for i in range(1, emap.Size() + 1):
+            edge = topods.Edge(emap.FindKey(i))
+            pts = _discretize_edge(edge, m)
+            if pts is None or len(pts) < 2:
+                continue
+            try:
+                g = GProp()
+                brepgprop.LinearProperties(edge, g)
+                info = f"length {g.Mass():.4g}"
+            except Exception:
+                info = "edge"
+            pm.edges.append(PickShape("edge", len(pm.edges), pts, edge, info))
+    return pm
+
+
+def _discretize_edge(edge, m):
+    """Return an (N, 3) polyline approximating an edge, or None."""
+    try:
+        adaptor = m["BRepAdaptor_Curve"](edge)
+        disc = m["GCPnts_QuasiUniformDeflection"](adaptor, 0.2)
+        if not disc.IsDone() or disc.NbPoints() < 2:
+            return None
+        pts = np.empty((disc.NbPoints(), 3))
+        for i in range(1, disc.NbPoints() + 1):
+            p = disc.Value(i)
+            pts[i - 1] = (p.X(), p.Y(), p.Z())
+        return pts
+    except Exception:
+        return None
+
+
+def measure(pa: PickShape, pb: PickShape) -> MeasureResult:
+    """Exact minimum distance between two picked sub-shapes (OpenCASCADE)."""
+    mods = _try_import()
+    if not AVAILABLE:
+        return MeasureResult(False, error="OpenCASCADE not available")
+    try:
+        ext = mods["BRepExtrema_DistShapeShape"](pa.shape, pb.shape)
+        if not ext.IsDone():
+            return MeasureResult(False, error="distance computation failed")
+        p1 = ext.PointOnShape1(1)
+        p2 = ext.PointOnShape2(1)
+        return MeasureResult(
+            True, kind_a=pa.kind, kind_b=pb.kind, info_a=pa.info,
+            info_b=pb.info, distance=float(ext.Value()),
+            p1=(p1.X(), p1.Y(), p1.Z()), p2=(p2.X(), p2.Y(), p2.Z()))
+    except Exception as e:
+        return MeasureResult(False, error=str(e))
 
 
 def _count(shape, typ, TopExp_Explorer) -> int:

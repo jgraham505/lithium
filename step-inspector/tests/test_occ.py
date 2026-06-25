@@ -66,5 +66,48 @@ class TestRealMesh(unittest.TestCase):
         self.assertEqual(self.r.acc.entities_parsed, len(self.res.entities))
 
 
+@unittest.skipUnless(HAVE_OCC, "pythonocc-core not installed")
+class TestMeasurement(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.pm = occ.load_and_mesh(SAMPLE).pick
+
+    def test_pick_model_built(self):
+        self.assertTrue(self.pm.vertices)
+        self.assertTrue(self.pm.edges)
+        self.assertEqual(len(self.pm.faces), 6)       # cube + annotation faces
+        self.assertIn("area", self.pm.faces[0].info)
+        self.assertIn("length", self.pm.edges[0].info)
+
+    def _vertex(self, xyz):
+        import numpy as np
+        for v in self.pm.vertices:
+            if np.allclose(v.pts[0], xyz, atol=1e-6):
+                return v
+        return None
+
+    def test_vertex_to_vertex_distance(self):
+        a = self._vertex([0, 0, 0])
+        b = self._vertex([40, 40, 40])
+        self.assertIsNotNone(a)
+        self.assertIsNotNone(b)
+        r = occ.measure(a, b)
+        self.assertTrue(r.ok)
+        self.assertAlmostEqual(r.distance, 40 * 3 ** 0.5, places=4)
+
+    def test_parallel_faces_distance(self):
+        # bottom (z=0) and top (z=40) planar faces are 40 apart
+        r = occ.measure(self.pm.faces[0], self.pm.faces[1])
+        self.assertTrue(r.ok)
+        self.assertAlmostEqual(r.distance, 40.0, places=4)
+
+    def test_measure_fields(self):
+        a = self._vertex([0, 0, 0])
+        r = occ.measure(a, self.pm.faces[1])
+        self.assertEqual(r.kind_a, "vertex")
+        self.assertEqual(r.kind_b, "face")
+        self.assertEqual(len(r.delta), 3)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

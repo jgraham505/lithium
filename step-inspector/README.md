@@ -96,7 +96,9 @@ triangulated sets) is rendered in the Geometry tab.
     triangulation of the exact B-rep via OpenCASCADE — see
     [Shaded surfaces (OpenCASCADE)](#shaded-surfaces-opencascade).
 
-  Drag to rotate, right-drag to pan, wheel to zoom.
+  Drag to rotate, right-drag to pan, wheel to zoom. A **Measure** mode
+  reports the exact minimum distance between any two points, edges, or faces
+  (see [Measuring distances](#measuring-distances)).
 * **PMI / GD&T** — geometric tolerances, dimensions, datums, annotation
   text, saved views, and notes/properties in readable form (see
   [AP242, PMI and GD&T](#ap242-pmi-and-gdt)).
@@ -226,6 +228,27 @@ SHADED GEOMETRY (OpenCASCADE — visualization only)
 
 Any face OpenCASCADE cannot tessellate, and any disagreement between its
 entity count and the audit parser's, is surfaced — never hidden.
+
+### Measuring distances
+
+With OpenCASCADE available, the Geometry tab has a **Measure** mode. Toggle
+it on, then click two items — a **point**, an **edge**, or a **face**, in any
+combination — and STEP Inspector reports the **exact minimum distance**
+between them (computed on the real B-rep with `BRepExtrema_DistShapeShape`,
+not estimated from the triangle mesh). The two picked sub-shapes are
+highlighted, a connector with the distance label is drawn between the closest
+points, and the side panel shows the distance, the ΔX/ΔY/ΔZ vector, both
+closest-point coordinates, and each selection's info (point coordinates, edge
+length, or face area).
+
+| Point-to-point | Face-to-face |
+|---|---|
+| ![Measure points](docs/geometry_measure.png) | ![Measure faces](docs/geometry_measure_faces.png) |
+
+A **Pick** filter (Auto / Points / Edges / Faces) restricts what a click
+selects when geometry overlaps. Dragging still rotates the model, so picking
+and orbiting coexist. Measurement needs the OpenCASCADE backend; without
+pythonocc-core the Measure button is disabled.
 
 ## Demo file
 
