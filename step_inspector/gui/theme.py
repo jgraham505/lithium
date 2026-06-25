@@ -9,8 +9,6 @@ only controls colors, fonts, spacing and borders.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from tkinter import font as tkfont
-from tkinter import ttk
 
 
 @dataclass(frozen=True)
@@ -147,150 +145,134 @@ DARK = Palette(
 PALETTES = {"light": LIGHT, "dark": DARK}
 
 
-def fonts() -> dict:
-    """Pick reasonable UI / monospace families available on the system."""
-    families = set(tkfont.families())
-    ui = next((f for f in ("Inter", "Segoe UI", "Cantarell", "Noto Sans",
-                           "DejaVu Sans", "Helvetica") if f in families),
-              "TkDefaultFont")
-    mono = next((f for f in ("JetBrains Mono", "Cascadia Code", "Hack",
-                             "DejaVu Sans Mono", "Noto Sans Mono",
-                             "Liberation Mono") if f in families),
-                "TkFixedFont")
-    return {"ui": ui, "mono": mono}
+# Preferred font families (Qt resolves the first available).
+UI_FONT = "Inter, 'Segoe UI', Cantarell, 'Noto Sans', 'DejaVu Sans', sans-serif"
+MONO_FONT = ("'JetBrains Mono', 'Cascadia Code', Hack, 'DejaVu Sans Mono', "
+             "'Noto Sans Mono', 'Liberation Mono', monospace")
 
 
-def apply(root, style: ttk.Style, pal: Palette, fnt: dict) -> None:
-    """Apply a palette to the whole application via ttk + root options."""
-    try:
-        style.theme_use("clam")
-    except Exception:
-        pass
-    ui = fnt["ui"]
-    base = (ui, 10)
+def qss(pal: Palette) -> str:
+    """Build a Qt stylesheet for the whole application from a palette."""
+    p = pal
+    return f"""
+    * {{
+        font-family: {UI_FONT};
+        font-size: 13px;
+        outline: 0;
+    }}
+    QMainWindow, QWidget {{
+        background: {p.window};
+        color: {p.text};
+    }}
+    QMenuBar {{ background: {p.raised}; color: {p.text}; border: 0; }}
+    QMenuBar::item {{ background: transparent; padding: 6px 10px; }}
+    QMenuBar::item:selected {{ background: {p.accent}; color: {p.accent_text}; }}
+    QMenu {{ background: {p.raised}; color: {p.text};
+             border: 1px solid {p.border}; padding: 4px; }}
+    QMenu::item {{ padding: 6px 24px; border-radius: 4px; }}
+    QMenu::item:selected {{ background: {p.accent}; color: {p.accent_text}; }}
 
-    root.configure(background=pal.window)
-    root.option_clear()
-    # tk (non-ttk) widget defaults
-    root.option_add("*background", pal.window)
-    root.option_add("*foreground", pal.text)
-    root.option_add("*Menu.background", pal.raised)
-    root.option_add("*Menu.foreground", pal.text)
-    root.option_add("*Menu.activeBackground", pal.accent)
-    root.option_add("*Menu.activeForeground", pal.accent_text)
-    root.option_add("*Menu.relief", "flat")
-    root.option_add("*Menu.borderWidth", 0)
+    #Banner {{ background: {p.raised}; }}
+    #BannerFile {{ font-size: 15px; font-weight: 600; color: {p.text}; }}
+    #StatusBar {{ background: {p.raised}; color: {p.text_dim}; }}
+    #Toolbar {{ background: {p.raised}; }}
+    #Toolbar QLabel {{ color: {p.text_dim}; }}
+    #Hint {{ color: {p.text_dim}; }}
+    #SectionHint {{ color: {p.text_dim}; padding: 6px 2px; }}
 
-    style.configure(".", background=pal.window, foreground=pal.text,
-                    fieldbackground=pal.panel, bordercolor=pal.border,
-                    lightcolor=pal.window, darkcolor=pal.window,
-                    troughcolor=pal.panel_alt, focuscolor=pal.accent,
-                    font=base)
-    style.configure("TFrame", background=pal.window)
-    style.configure("TLabel", background=pal.window, foreground=pal.text)
-    style.configure("Dim.TLabel", foreground=pal.text_dim)
-    style.configure("Title.TLabel", font=(ui, 12, "bold"))
-    style.configure("Status.TLabel", background=pal.raised,
-                    foreground=pal.text_dim, padding=(10, 4))
-    style.configure("Toolbar.TFrame", background=pal.raised)
-    style.configure("Toolbar.TLabel", background=pal.raised,
-                    foreground=pal.text_dim)
-    style.configure("Toolbar.TCheckbutton", background=pal.raised)
-    style.map("Toolbar.TCheckbutton", background=[("active", pal.raised)])
-    style.configure("Toolbar.TRadiobutton", background=pal.raised)
-    style.map("Toolbar.TRadiobutton", background=[("active", pal.raised)],
-              indicatorcolor=[("selected", pal.accent),
-                              ("!selected", pal.panel_alt)])
-    style.configure("Banner.TFrame", background=pal.raised)
-    style.configure("Banner.TLabel", background=pal.raised, foreground=pal.text)
-    style.configure("Hint.TLabel", background=pal.window,
-                    foreground=pal.text_dim)
+    QTabWidget::pane {{ border: 0; background: {p.panel}; }}
+    QTabBar {{ background: {p.window}; }}
+    QTabBar::tab {{
+        background: {p.window}; color: {p.text_dim};
+        padding: 9px 18px; margin-right: 2px; border: 0;
+        border-bottom: 2px solid transparent;
+    }}
+    QTabBar::tab:hover {{ color: {p.text}; background: {p.panel_alt}; }}
+    QTabBar::tab:selected {{
+        color: {p.accent}; background: {p.panel};
+        border-bottom: 2px solid {p.accent};
+    }}
 
-    # buttons
-    style.configure("TButton", background=pal.panel_alt, foreground=pal.text,
-                    bordercolor=pal.border, focusthickness=1, relief="flat",
-                    padding=(12, 6))
-    style.map("TButton",
-              background=[("active", pal.sel_bg), ("pressed", pal.accent)],
-              foreground=[("pressed", pal.accent_text)])
-    style.configure("Accent.TButton", background=pal.accent,
-                    foreground=pal.accent_text, padding=(14, 6))
-    style.map("Accent.TButton",
-              background=[("active", pal.accent), ("pressed", pal.accent)])
+    QPushButton {{
+        background: {p.panel_alt}; color: {p.text};
+        border: 1px solid {p.border}; border-radius: 6px;
+        padding: 6px 14px;
+    }}
+    QPushButton:hover {{ background: {p.sel_bg}; }}
+    QPushButton:pressed {{ background: {p.accent}; color: {p.accent_text}; }}
+    QPushButton#Accent {{
+        background: {p.accent}; color: {p.accent_text}; border: 0;
+        font-weight: 600;
+    }}
+    QPushButton#Accent:hover {{ background: {p.accent}; }}
 
-    # checkbuttons
-    style.configure("TCheckbutton", background=pal.raised, foreground=pal.text,
-                    focuscolor=pal.accent)
-    style.map("TCheckbutton",
-              background=[("active", pal.raised)],
-              foreground=[("active", pal.text)],
-              indicatorcolor=[("selected", pal.accent),
-                              ("!selected", pal.panel_alt)])
+    QRadioButton, QCheckBox {{ color: {p.text}; spacing: 6px; }}
+    QRadioButton::indicator, QCheckBox::indicator {{
+        width: 14px; height: 14px;
+    }}
+    QRadioButton::indicator {{
+        border: 1px solid {p.border}; border-radius: 8px;
+        background: {p.panel};
+    }}
+    QRadioButton::indicator:checked {{
+        border: 4px solid {p.accent}; background: {p.panel};
+    }}
+    QCheckBox::indicator {{
+        border: 1px solid {p.border}; border-radius: 3px; background: {p.panel};
+    }}
+    QCheckBox::indicator:checked {{
+        background: {p.accent}; border: 1px solid {p.accent};
+    }}
 
-    # entries
-    style.configure("TEntry", fieldbackground=pal.panel,
-                    foreground=pal.text, bordercolor=pal.border,
-                    insertcolor=pal.text, padding=4)
-    style.map("TEntry", bordercolor=[("focus", pal.accent)])
+    QLineEdit {{
+        background: {p.panel}; color: {p.text};
+        border: 1px solid {p.border}; border-radius: 6px; padding: 5px 8px;
+        selection-background-color: {p.sel_bg};
+    }}
+    QLineEdit:focus {{ border: 1px solid {p.accent}; }}
 
-    # notebook — flat tabs, accent on the active one
-    style.configure("TNotebook", background=pal.window, borderwidth=0,
-                    tabmargins=(6, 6, 6, 0))
-    style.configure("TNotebook.Tab", background=pal.window,
-                    foreground=pal.text_dim, padding=(16, 8),
-                    borderwidth=0, font=base)
-    style.map("TNotebook.Tab",
-              background=[("selected", pal.panel), ("active", pal.panel_alt)],
-              foreground=[("selected", pal.accent), ("active", pal.text)],
-              expand=[("selected", (0, 0, 0, 0))])
+    QTreeWidget, QTreeView, QListWidget {{
+        background: {p.panel}; color: {p.text};
+        border: 1px solid {p.border}; border-radius: 6px;
+        alternate-background-color: {p.panel_alt};
+    }}
+    QTreeWidget::item, QListWidget::item {{ padding: 3px 2px; }}
+    QTreeView::item:selected, QListWidget::item:selected,
+    QTreeWidget::item:selected {{
+        background: {p.sel_bg}; color: {p.sel_fg};
+    }}
+    QHeaderView::section {{
+        background: {p.panel_alt}; color: {p.text_dim};
+        padding: 5px 8px; border: 0; border-right: 1px solid {p.border};
+        font-weight: 600;
+    }}
+    QTextEdit, QPlainTextEdit {{
+        background: {p.panel}; color: {p.text};
+        border: 1px solid {p.border}; border-radius: 6px;
+        selection-background-color: {p.sel_bg};
+        selection-color: {p.sel_fg};
+    }}
+    QTextEdit#Flat {{ background: {p.window}; border: 0; }}
 
-    # paned windows
-    style.configure("TPanedwindow", background=pal.window)
-    style.configure("Sash", sashthickness=6, gripcount=0,
-                    background=pal.window, bordercolor=pal.border)
+    QGroupBox {{
+        border: 1px solid {p.border}; border-radius: 6px;
+        margin-top: 10px; padding-top: 6px;
+    }}
+    QGroupBox::title {{
+        subcontrol-origin: margin; left: 10px; padding: 0 4px;
+        color: {p.text_dim};
+    }}
 
-    # labelframes
-    style.configure("TLabelframe", background=pal.window,
-                    bordercolor=pal.border, relief="solid", borderwidth=1)
-    style.configure("TLabelframe.Label", background=pal.window,
-                    foreground=pal.text_dim, font=(ui, 9, "bold"))
-
-    # treeview
-    rowh = max(22, fnt.get("rowheight", 24))
-    style.configure("Treeview", background=pal.panel, fieldbackground=pal.panel,
-                    foreground=pal.text, bordercolor=pal.border,
-                    borderwidth=0, rowheight=rowh, font=base)
-    style.map("Treeview",
-              background=[("selected", pal.sel_bg)],
-              foreground=[("selected", pal.sel_fg)])
-    style.configure("Treeview.Heading", background=pal.panel_alt,
-                    foreground=pal.text_dim, relief="flat",
-                    font=(ui, 9, "bold"), padding=(6, 5),
-                    bordercolor=pal.border)
-    style.map("Treeview.Heading",
-              background=[("active", pal.sel_bg)])
-
-    # scrollbars
-    style.configure("TScrollbar", background=pal.panel_alt,
-                    troughcolor=pal.window, bordercolor=pal.window,
-                    arrowcolor=pal.text_dim, relief="flat")
-    style.map("TScrollbar", background=[("active", pal.border)])
-
-
-def style_text(widget, pal: Palette, mono: bool = True, dim: bool = False,
-               flat_bg: bool = False) -> None:
-    """Apply palette colors to a tk.Text widget."""
-    bg = pal.window if flat_bg else pal.panel
-    widget.configure(
-        background=bg, foreground=pal.text_dim if dim else pal.text,
-        insertbackground=pal.text, selectbackground=pal.sel_bg,
-        selectforeground=pal.sel_fg, highlightthickness=0, borderwidth=0,
-        relief="flat")
-
-
-def style_listbox(widget, pal: Palette) -> None:
-    widget.configure(
-        background=pal.panel, foreground=pal.text,
-        selectbackground=pal.sel_bg, selectforeground=pal.sel_fg,
-        highlightthickness=0, borderwidth=0, relief="flat",
-        activestyle="none")
+    QSplitter::handle {{ background: {p.window}; }}
+    QScrollBar:vertical {{ background: {p.window}; width: 12px; margin: 0; }}
+    QScrollBar::handle:vertical {{
+        background: {p.panel_alt}; border-radius: 6px; min-height: 24px;
+    }}
+    QScrollBar::handle:vertical:hover {{ background: {p.border}; }}
+    QScrollBar:horizontal {{ background: {p.window}; height: 12px; }}
+    QScrollBar::handle:horizontal {{
+        background: {p.panel_alt}; border-radius: 6px; min-width: 24px;
+    }}
+    QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
+    QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
+    """
