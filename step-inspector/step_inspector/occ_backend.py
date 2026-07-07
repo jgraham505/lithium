@@ -130,6 +130,24 @@ class PickShape:
 
 
 @dataclass
+class SolidProps:
+    """Exact properties of one solid body within the shape."""
+    index: int                            # 1-based, in TopExp order
+    volume: float = 0.0
+    area: float = 0.0
+    com: tuple = (0.0, 0.0, 0.0)
+    bbox_min: tuple = (0.0, 0.0, 0.0)
+    bbox_max: tuple = (0.0, 0.0, 0.0)
+    shape: object = None                  # TopoDS_Solid
+
+    @property
+    def bbox_size(self) -> tuple:
+        return (self.bbox_max[0] - self.bbox_min[0],
+                self.bbox_max[1] - self.bbox_min[1],
+                self.bbox_max[2] - self.bbox_min[2])
+
+
+@dataclass
 class ShapeProperties:
     """Exact mass/size properties of the whole B-rep (OpenCASCADE)."""
     ok: bool = False
@@ -139,6 +157,7 @@ class ShapeProperties:
     com: tuple = (0.0, 0.0, 0.0)          # centre of mass
     bbox_min: tuple = (0.0, 0.0, 0.0)
     bbox_max: tuple = (0.0, 0.0, 0.0)
+    solids: list = field(default_factory=list)   # [SolidProps], per body
 
     @property
     def bbox_size(self) -> tuple:
@@ -206,6 +225,7 @@ class OccResult:
     acc: OccAccounting = field(default_factory=OccAccounting)
     pick: PickModel = field(default_factory=PickModel)
     props: ShapeProperties = field(default_factory=ShapeProperties)
+    shape: object = None            # TopoDS_Shape for the native viewer
 
 
 def available() -> bool:
@@ -335,8 +355,10 @@ def load_and_mesh(path: str, lin_deflection: float = 0.0,
         return OccResult(ok=False,
                          error="OpenCASCADE read the file but produced no "
                                "triangulated surfaces (no solid/shell B-rep "
-                               "to mesh).", mesh=mesh, acc=acc, props=props)
-    return OccResult(ok=True, mesh=mesh, acc=acc, pick=pick, props=props)
+                               "to mesh).", mesh=mesh, acc=acc, props=props,
+                         shape=shape)
+    return OccResult(ok=True, mesh=mesh, acc=acc, pick=pick, props=props,
+                     shape=shape)
 
 
 def _properties(shape, m) -> ShapeProperties:
@@ -358,10 +380,80 @@ def _properties(shape, m) -> ShapeProperties:
         x0, y0, z0, x1, y1, z1 = box.Get()
         p.bbox_min = (x0, y0, z0)
         p.bbox_max = (x1, y1, z1)
+        # per-solid breakdown (multi-body files)
+        exp = m["TopExp_Explorer"](shape, m["TopAbs_SOLID"])
+        idx = 0
+        while exp.More():
+            idx += 1
+            solid = exp.Current()
+            sp = SolidProps(index=idx, shape=solid)
+            try:
+                gv2 = m["GProp_GProps"]()
+                m["brepgprop"].VolumeProperties(solid, gv2)
+                sp.volume = float(gv2.Mass())
+                c2 = gv2.CentreOfMass()
+                sp.com = (c2.X(), c2.Y(), c2.Z())
+                gs2 = m["GProp_GProps"]()
+                m["brepgprop"].SurfaceProperties(solid, gs2)
+                sp.area = float(gs2.Mass())
+                b2 = m["Bnd_Box"]()
+                m["brepbndlib"].Add(solid, b2)
+                sx0, sy0, sz0, sx1, sy1, sz1 = b2.Get()
+                sp.bbox_min = (sx0, sy0, sz0)
+                sp.bbox_max = (sx1, sy1, sz1)
+            except Exception:
+                pass
+            p.solids.append(sp)
+            exp.Next()
         p.ok = True
     except Exception:
         p.ok = False
     return p
+
+
+def describe_subshape(topo_shape) -> Optional[PickShape]:
+    """Wrap a selected TopoDS sub-shape (from the native viewer) as a
+    PickShape with kind/info/direction/radius, ready for measure()."""
+    m = _try_import()
+    if not AVAILABLE or topo_shape is None:
+        return None
+    try:
+        from OCC.Core.TopAbs import (TopAbs_VERTEX, TopAbs_EDGE, TopAbs_FACE)
+        st = topo_shape.ShapeType()
+        topods = m["topods"]
+        if st == TopAbs_VERTEX:
+            v = topods.Vertex(topo_shape)
+            p = m["BRep_Tool"].Pnt(v)
+            xyz = np.array([[p.X(), p.Y(), p.Z()]])
+            return PickShape("vertex", 0, xyz, v,
+                             f"({p.X():.4g}, {p.Y():.4g}, {p.Z():.4g})")
+        if st == TopAbs_EDGE:
+            edge = topods.Edge(topo_shape)
+            try:
+                g = m["GProp_GProps"]()
+                m["brepgprop"].LinearProperties(edge, g)
+                length = g.Mass()
+            except Exception:
+                length = 0.0
+            direction, radius, info = _curve_dir_radius(edge, length, m)
+            pts = _discretize_edge(edge, m)
+            return PickShape("edge", 0,
+                             pts if pts is not None else np.empty((0, 3)),
+                             edge, info, direction, radius)
+        if st == TopAbs_FACE:
+            face = topods.Face(topo_shape)
+            try:
+                g = m["GProp_GProps"]()
+                m["brepgprop"].SurfaceProperties(face, g)
+                info = f"area {g.Mass():.4g}"
+            except Exception:
+                info = "face"
+            direction, radius, extra = _surface_dir_radius(face, m)
+            return PickShape("face", 0, np.empty((0, 3)), face,
+                             info + extra, direction, radius)
+    except Exception:
+        return None
+    return None
 
 
 # ---------------------------------------------------------------------------

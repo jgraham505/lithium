@@ -19,6 +19,7 @@ from ..report import build_report, coverage_summary
 from . import theme
 from .theme import PALETTES
 from .qt_viewer import KIND_LABELS, Viewer3D
+from . import qt_occ_viewer
 
 APP_TITLE = "STEP Inspector"
 
@@ -437,6 +438,16 @@ class OverviewTab(QtWidgets.QWidget):
                       "solid)")
                 p(f"&nbsp;&nbsp;centre of mass: ({pr.com[0]:.4g}, "
                   f"{pr.com[1]:.4g}, {pr.com[2]:.4g})")
+                if len(pr.solids) > 1:
+                    p(f"&nbsp;&nbsp;per-solid breakdown "
+                      f"({len(pr.solids)} bodies):")
+                    for s in pr.solids:
+                        b = s.bbox_size
+                        p("&nbsp;&nbsp;&nbsp;&nbsp;"
+                          f"solid {s.index}: volume {s.volume:.6g}, area "
+                          f"{s.area:.6g}, CoM ({s.com[0]:.4g}, {s.com[1]:.4g},"
+                          f" {s.com[2]:.4g}), bbox {b[0]:.4g}×{b[1]:.4g}×"
+                          f"{b[2]:.4g}")
             p("&nbsp;&nbsp;Note: byte-level coverage is proven by the audit "
               "parser above; OpenCASCADE only renders surfaces.", "d")
 
@@ -701,7 +712,7 @@ class GeometryTab(QtWidgets.QWidget):
         bl.setContentsMargins(8, 6, 8, 6)
         fit = QtWidgets.QPushButton("Fit view")
         fit.setObjectName("Accent")
-        fit.clicked.connect(lambda: self.viewer.fit())
+        fit.clicked.connect(self._fit_active)
         bl.addWidget(fit)
         self.rb_wire = QtWidgets.QRadioButton("Wireframe")
         self.rb_wire.setChecked(True)
@@ -734,9 +745,19 @@ class GeometryTab(QtWidgets.QWidget):
         lay.addWidget(bar)
 
         split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.stack = QtWidgets.QStackedWidget()
         self.viewer = Viewer3D(win.pal)
         self.viewer.pick_changed.connect(self._update_measure_panel)
-        split.addWidget(self.viewer)
+        self.stack.addWidget(self.viewer)
+        # native OpenCASCADE OpenGL viewer for shaded mode, when importable
+        self.native = None
+        self.native_sel = []
+        self.native_res = None
+        if occ.available() and qt_occ_viewer.available():
+            self.native = qt_occ_viewer.NativeViewer(win.pal)
+            self.native.selection_made.connect(self._on_native_pick)
+            self.stack.addWidget(self.native)
+        split.addWidget(self.stack)
         self.measure_panel = self._build_measure_panel()
         split.addWidget(self.measure_panel)
         split.setSizes([1040, 280])
@@ -759,10 +780,7 @@ class GeometryTab(QtWidgets.QWidget):
         row.addWidget(QtWidgets.QLabel("Pick:"))
         self.pick_combo = QtWidgets.QComboBox()
         self.pick_combo.addItems(["Auto", "Points", "Edges", "Faces"])
-        self.pick_combo.currentTextChanged.connect(
-            lambda t: self.viewer.set_pick_filter(
-                {"Auto": "auto", "Points": "vertex", "Edges": "edge",
-                 "Faces": "face"}[t]))
+        self.pick_combo.currentTextChanged.connect(self._on_pick_filter)
         row.addWidget(self.pick_combo, 1)
         v.addLayout(row)
         hint = QtWidgets.QLabel(
@@ -778,20 +796,72 @@ class GeometryTab(QtWidgets.QWidget):
         self.measure_text.setAlignment(QtCore.Qt.AlignTop)
         v.addWidget(self.measure_text, 1)
         clear = QtWidgets.QPushButton("Clear")
-        clear.clicked.connect(lambda: self.viewer.clear_measure())
+        clear.clicked.connect(self._clear_measure)
         v.addWidget(clear)
         return box
 
+    # -- viewer-agnostic helpers ---------------------------------------------
+    def _native_active(self):
+        return self.native is not None \
+            and self.stack.currentWidget() is self.native
+
+    def _fit_active(self):
+        if self._native_active():
+            self.native.fit()
+        else:
+            self.viewer.fit()
+
+    def _on_pick_filter(self, t):
+        f = {"Auto": "auto", "Points": "vertex", "Edges": "edge",
+             "Faces": "face"}[t]
+        self.viewer.set_pick_filter(f)
+        if self.native is not None:
+            self.native.set_pick_filter(f)
+
+    def _clear_measure(self):
+        self.viewer.clear_measure()
+        self.native_sel = []
+        self.native_res = None
+        if self.native is not None:
+            self.native.clear_overlay()
+        self._update_measure_panel()
+
     def _on_measure(self, on):
         self.viewer.set_measure_mode(on)
+        if self.native is not None:
+            self.native.set_measuring(on)
+            if not on:
+                self.native_sel = []
+                self.native_res = None
+                self.native.clear_overlay()
         self.measure_panel.setVisible(on)
         self.btn_measure.setText("Measure: ON" if on else "Measure")
         self._update_measure_panel()
 
+    def _on_native_pick(self, topo_shape):
+        ps = occ.describe_subshape(topo_shape)
+        if ps is None:
+            return
+        if len(self.native_sel) >= 2:
+            self.native_sel = []
+            self.native_res = None
+            self.native.clear_overlay()
+        self.native_sel.append(ps)
+        if len(self.native_sel) == 2:
+            self.native_res = occ.measure(self.native_sel[0],
+                                          self.native_sel[1])
+            if self.native_res.ok:
+                self.native.show_measurement(self.native_res)
+        self._update_measure_panel()
+
     def _update_measure_panel(self):
         pal = self.win.pal
-        sel = self.viewer.selection
-        r = self.viewer.measure_result
+        if self._native_active():
+            sel = self.native_sel
+            r = self.native_res
+        else:
+            sel = self.viewer.selection
+            r = self.viewer.measure_result
         rows = []
         for i, s in enumerate(sel, 1):
             rows.append(f"<b>{i}. {s.kind}</b> — {s.info}")
@@ -831,8 +901,10 @@ class GeometryTab(QtWidgets.QWidget):
             "Drag rotate · Right-drag pan · Wheel zoom    "))
         if self.rb_shaded.isChecked():
             self.foot_lay.addWidget(self._swatch("#%02x%02x%02x" % pal.surface))
-            self.foot_lay.addWidget(QtWidgets.QLabel(
-                "OpenCASCADE shaded B-rep surfaces"))
+            label = ("OpenCASCADE native OpenGL viewer (exact B-rep)"
+                     if self._native_active()
+                     else "OpenCASCADE shaded B-rep surfaces")
+            self.foot_lay.addWidget(QtWidgets.QLabel(label))
         else:
             for kind, color in pal.kind_colors().items():
                 if kind == "ellipse":
@@ -852,6 +924,8 @@ class GeometryTab(QtWidgets.QWidget):
 
     def restyle(self):
         self.viewer.apply_palette(self.win.pal)
+        if self.native is not None:
+            self.native.apply_palette(self.win.pal)
         self._build_legend()
         self.occ_status()
 
@@ -873,6 +947,9 @@ class GeometryTab(QtWidgets.QWidget):
         self.btn_measure.setToolTip(
             "" if can_measure else
             "Measurement needs OpenCASCADE surface data (pythonocc-core).")
+        # refresh the native viewer if shaded mode is already active
+        if self.rb_shaded.isChecked():
+            self._on_mode()
         self.occ_status()
 
     def occ_status(self, busy=False):
@@ -896,10 +973,20 @@ class GeometryTab(QtWidgets.QWidget):
                 "entities")
 
     def _on_mode(self):
-        self.viewer.set_mode("shaded" if self.rb_shaded.isChecked()
-                             else "wire")
+        shaded = self.rb_shaded.isChecked()
+        use_native = False
+        if shaded and self.native is not None and self.win.occ is not None \
+                and self.win.occ.shape is not None:
+            use_native = self.native.show_shape(self.win.occ.shape)
+        if use_native:
+            self.stack.setCurrentWidget(self.native)
+            self.native.set_measuring(self.btn_measure.isChecked())
+        else:
+            self.stack.setCurrentWidget(self.viewer)
+            self.viewer.set_mode("shaded" if shaded else "wire")
         self._build_legend()
         self.populate()
+        self._update_measure_panel()
 
     def populate(self):
         self.viewer.set_model(self.win.wire)
