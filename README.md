@@ -92,8 +92,12 @@ triangulated sets) is rendered in the Geometry tab.
     curve sets (AP242 tessellated PMI), vertices and free points. Curves the
     sampler can't evaluate are still drawn as dashed chords and counted —
     nothing is silently dropped.
-  * *Shaded solids* (when pythonocc-core is installed): true shaded surface
-    triangulation of the exact B-rep via OpenCASCADE — see
+  * *Shaded solids* (when pythonocc-core is installed): OpenCASCADE's
+    **native OpenGL viewer** (`qtViewer3d`) embedded in the tab —
+    hardware-accelerated shading of the exact B-rep with kernel-exact
+    edges, and kernel-native sub-shape selection for measurement. If the
+    native viewer cannot initialize (no OpenGL), it falls back to the
+    built-in QPainter renderer automatically — see
     [Shaded surfaces (OpenCASCADE)](#shaded-surfaces-opencascade).
 
   Drag to rotate, right-drag to pan, wheel to zoom. A **Measure** mode
@@ -217,17 +221,33 @@ conda activate step-inspector
 python -m step_inspector [file.step]
 ```
 
-### Mass & size properties
+### Native OpenGL viewer
+
+The *Shaded solids* mode embeds pythonocc's `qtViewer3d` — OpenCASCADE's own
+Qt/OpenGL viewer, driven entirely from Python. Compared to the built-in
+QPainter renderer it gives hardware-accelerated shading, **exact** curve and
+edge rendering (circles are circles, not chord approximations), and
+kernel-native selection: in Measure mode, clicks are resolved by the OCC
+selection engine directly to the underlying `TopoDS` vertex/edge/face, and
+the measured connector + distance/angle label are drawn in-scene as AIS
+objects. Wireframe mode keeps the lightweight QPainter renderer, which also
+serves as the automatic fallback when OpenGL isn't available.
+
+### Mass & size properties (per solid)
 
 When OpenCASCADE meshes a part it also reports its exact **bounding box**,
 **surface area**, and — for closed solids — **volume** and **centre of
-mass** (via `BRepGProp` / `Bnd_Box`). These appear in the Overview tab's
-OpenCASCADE section and in the `--report --shaded` output, e.g.:
+mass** (via `BRepGProp` / `Bnd_Box`). For **multi-body** files every solid
+gets its own breakdown. These appear in the Overview tab's OpenCASCADE
+section and in the `--report --shaded` output, e.g.:
 
 ```
-  bounding box: 60.2 x 60.2 x 50.2
-  volume: 64000   surface area: 9600
-  centre of mass: (20, 20, 20)
+  bounding box: 70 x 20 x 20
+  volume: 9000   surface area: 3000
+  centre of mass: (53.89, 9.444, 9.444)
+  per-solid breakdown (2 bodies):
+    solid 1: volume 1000   area 600    CoM (5, 5, 5)      bbox 10 x 10 x 10
+    solid 2: volume 8000   area 2400   CoM (60, 10, 10)   bbox 20 x 20 x 20
 ```
 
 ### Coverage is still the audit parser's job — OpenCASCADE is accounted for

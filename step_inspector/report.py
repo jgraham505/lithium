@@ -178,6 +178,14 @@ def build_report(res: AuditResult, st: SteptoolsInfo | None = None,
                     w(f"  surface area: {pr.area:.6g} (no closed solid)")
                 w(f"  centre of mass: ({pr.com[0]:.4g}, {pr.com[1]:.4g}, "
                   f"{pr.com[2]:.4g})")
+                if len(pr.solids) > 1:
+                    w(f"  per-solid breakdown ({len(pr.solids)} bodies):")
+                    for s in pr.solids:
+                        b = s.bbox_size
+                        w(f"    solid {s.index}: volume {s.volume:.6g}   "
+                          f"area {s.area:.6g}   CoM ({s.com[0]:.4g}, "
+                          f"{s.com[1]:.4g}, {s.com[2]:.4g})   bbox "
+                          f"{b[0]:.4g} x {b[1]:.4g} x {b[2]:.4g}")
         w("  (Byte-level coverage is proven by the audit parser above; "
           "OpenCASCADE only renders surfaces.)")
 
