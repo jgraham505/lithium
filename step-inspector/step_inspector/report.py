@@ -167,6 +167,17 @@ def build_report(res: AuditResult, st: SteptoolsInfo | None = None,
             if a.faces_no_triangulation:
                 w(f"  WARNING: {a.faces_no_triangulation} face(s) not "
                   "tessellated")
+            pr = getattr(occ_result, "props", None)
+            if pr is not None and pr.ok:
+                bb = pr.bbox_size
+                w(f"  bounding box: {bb[0]:.4g} x {bb[1]:.4g} x {bb[2]:.4g}")
+                if pr.is_solid:
+                    w(f"  volume: {pr.volume:.6g}   surface area: "
+                      f"{pr.area:.6g}")
+                else:
+                    w(f"  surface area: {pr.area:.6g} (no closed solid)")
+                w(f"  centre of mass: ({pr.com[0]:.4g}, {pr.com[1]:.4g}, "
+                  f"{pr.com[2]:.4g})")
         w("  (Byte-level coverage is proven by the audit parser above; "
           "OpenCASCADE only renders surfaces.)")
 

@@ -208,6 +208,28 @@ It is entirely optional: without it, the Geometry tab still works in
 wireframe mode and the rest of the app is unaffected (the *Shaded solids*
 toggle is simply disabled with a hint).
 
+For a one-command, fully reproducible setup with OpenCASCADE included, use
+the bundled conda environment file:
+
+```sh
+conda env create -f environment.yml
+conda activate step-inspector
+python -m step_inspector [file.step]
+```
+
+### Mass & size properties
+
+When OpenCASCADE meshes a part it also reports its exact **bounding box**,
+**surface area**, and — for closed solids — **volume** and **centre of
+mass** (via `BRepGProp` / `Bnd_Box`). These appear in the Overview tab's
+OpenCASCADE section and in the `--report --shaded` output, e.g.:
+
+```
+  bounding box: 60.2 x 60.2 x 50.2
+  volume: 64000   surface area: 9600
+  centre of mass: (20, 20, 20)
+```
+
 ### Coverage is still the audit parser's job — OpenCASCADE is accounted for
 
 OpenCASCADE has its own, *more permissive* STEP reader: it will load a file
@@ -238,8 +260,15 @@ between them (computed on the real B-rep with `BRepExtrema_DistShapeShape`,
 not estimated from the triangle mesh). The two picked sub-shapes are
 highlighted, a connector with the distance label is drawn between the closest
 points, and the side panel shows the distance, the ΔX/ΔY/ΔZ vector, both
-closest-point coordinates, and each selection's info (point coordinates, edge
-length, or face area).
+closest-point coordinates, and each selection's info:
+
+* **points** — coordinates
+* **edges** — length; for a circular edge, **radius and diameter**
+* **faces** — area; for a cylindrical face, **radius and diameter**
+
+When both selections have a well-defined direction (a straight edge, or a
+planar face's normal, or a cylinder axis) the **angle** between them is
+reported too — e.g. two adjacent cube faces read distance 0, angle 90°.
 
 | Point-to-point | Face-to-face |
 |---|---|

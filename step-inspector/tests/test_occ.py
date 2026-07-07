@@ -108,6 +108,49 @@ class TestMeasurement(unittest.TestCase):
         self.assertEqual(r.kind_b, "face")
         self.assertEqual(len(r.delta), 3)
 
+    def test_angle_between_faces(self):
+        import numpy as np
+
+        def face_normal(n):
+            n = np.array(n) / np.linalg.norm(n)
+            for f in self.pm.faces:
+                if f.direction and np.allclose(np.abs(f.direction), np.abs(n),
+                                               atol=1e-3):
+                    return f
+            return None
+        adj = occ.measure(face_normal([0, 0, 1]), face_normal([1, 0, 0]))
+        self.assertAlmostEqual(adj.angle, 90.0, places=3)
+        par = occ.measure(self.pm.faces[0], self.pm.faces[1])
+        self.assertAlmostEqual(par.angle, 0.0, places=3)
+
+    def test_circular_edge_radius(self):
+        circ = [e for e in self.pm.edges if e.radius]
+        self.assertTrue(circ)                       # datum circle D1
+        self.assertAlmostEqual(circ[0].radius, 12.5, places=3)
+        self.assertIn("⌀", circ[0].info)
+
+
+@unittest.skipUnless(HAVE_OCC, "pythonocc-core not installed")
+class TestProperties(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.p = occ.load_and_mesh(SAMPLE).props
+
+    def test_volume_and_area(self):
+        self.assertTrue(self.p.ok)
+        self.assertTrue(self.p.is_solid)
+        self.assertAlmostEqual(self.p.volume, 64000.0, places=1)   # 40^3
+        self.assertAlmostEqual(self.p.area, 9600.0, places=1)      # 6*40^2
+
+    def test_centre_of_mass(self):
+        for c in self.p.com:
+            self.assertAlmostEqual(c, 20.0, places=3)
+
+    def test_bounding_box(self):
+        # cube is 40; annotation geometry extends it — must be >= 40
+        for d in self.p.bbox_size:
+            self.assertGreaterEqual(d, 40.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

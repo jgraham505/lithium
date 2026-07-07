@@ -424,6 +424,19 @@ class OverviewTab(QtWidgets.QWidget):
                 p(f"▲ Its STEP reader parsed {a.entities_parsed} entities vs "
                   f"{len(res.entities)} found by the audit parser — audit is "
                   "authoritative.", "w")
+            pr = r.props
+            if pr.ok:
+                bb = pr.bbox_size
+                p(f"&nbsp;&nbsp;bounding box: {bb[0]:.4g} × {bb[1]:.4g} × "
+                  f"{bb[2]:.4g}")
+                if pr.is_solid:
+                    p(f"&nbsp;&nbsp;volume: {pr.volume:.6g}&nbsp;&nbsp;&nbsp;"
+                      f"surface area: {pr.area:.6g}".replace(" ", "&nbsp;"))
+                else:
+                    p(f"&nbsp;&nbsp;surface area: {pr.area:.6g} (no closed "
+                      "solid)")
+                p(f"&nbsp;&nbsp;centre of mass: ({pr.com[0]:.4g}, "
+                  f"{pr.com[1]:.4g}, {pr.com[2]:.4g})")
             p("&nbsp;&nbsp;Note: byte-level coverage is proven by the audit "
               "parser above; OpenCASCADE only renders surfaces.", "d")
 
@@ -794,6 +807,10 @@ class GeometryTab(QtWidgets.QWidget):
                 rows.append("<hr>")
                 rows.append(f"<b style='font-size:16px;color:{pal.accent}'>"
                             f"distance {r.distance:.6g}</b>")
+                if r.angle is not None:
+                    rows.append(f"<b>angle {r.angle:.4g}°</b> "
+                                f"<span style='color:{pal.text_dim}'>(between "
+                                "directions)</span>")
                 rows.append(f"Δ = ({dx:.4g}, {dy:.4g}, {dz:.4g})")
                 rows.append(f"<span style='color:{pal.text_dim}'>from "
                             f"({r.p1[0]:.4g}, {r.p1[1]:.4g}, {r.p1[2]:.4g})"
