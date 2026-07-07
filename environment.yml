@@ -1,0 +1,20 @@
+# Reproducible full-featured environment for STEP Inspector, including the
+# OpenCASCADE backend (pythonocc-core), which is conda-only.
+#
+#   conda env create -f environment.yml
+#   conda activate step-inspector
+#   python -m step_inspector [file.step]
+#
+# pythonocc-core enables the shaded-surface view and the measurement /
+# mass-property features; without it the app still runs (wireframe + audit).
+name: step-inspector
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pythonocc-core>=7.7
+  - pyside6>=6.5
+  - numpy>=1.24
+  - pip
+  - pip:
+      - steptools>=20.0

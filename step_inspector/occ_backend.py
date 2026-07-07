@@ -47,10 +47,15 @@ def _try_import():
         from OCC.Core.BRep import BRep_Tool
         from OCC.Core.TopoDS import topods
         from OCC.Core.BRepExtrema import BRepExtrema_DistShapeShape
-        from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
+        from OCC.Core.BRepAdaptor import (BRepAdaptor_Curve,
+                                          BRepAdaptor_Surface)
         from OCC.Core.GCPnts import GCPnts_QuasiUniformDeflection
         from OCC.Core.GProp import GProp_GProps
         from OCC.Core.BRepGProp import brepgprop
+        from OCC.Core.Bnd import Bnd_Box
+        from OCC.Core.BRepBndLib import brepbndlib
+        from OCC.Core.GeomAbs import (GeomAbs_Line, GeomAbs_Circle,
+                                      GeomAbs_Plane, GeomAbs_Cylinder)
         AVAILABLE = True
         return {
             "STEPControl_Reader": STEPControl_Reader,
@@ -70,9 +75,16 @@ def _try_import():
             "topods": topods,
             "BRepExtrema_DistShapeShape": BRepExtrema_DistShapeShape,
             "BRepAdaptor_Curve": BRepAdaptor_Curve,
+            "BRepAdaptor_Surface": BRepAdaptor_Surface,
             "GCPnts_QuasiUniformDeflection": GCPnts_QuasiUniformDeflection,
             "GProp_GProps": GProp_GProps,
             "brepgprop": brepgprop,
+            "Bnd_Box": Bnd_Box,
+            "brepbndlib": brepbndlib,
+            "GeomAbs_Line": GeomAbs_Line,
+            "GeomAbs_Circle": GeomAbs_Circle,
+            "GeomAbs_Plane": GeomAbs_Plane,
+            "GeomAbs_Cylinder": GeomAbs_Cylinder,
         }
     except Exception as e:        # pragma: no cover - depends on environment
         AVAILABLE = False
@@ -112,7 +124,27 @@ class PickShape:
     index: int                # position within its kind list
     pts: np.ndarray           # (K, 3) world points used for screen picking
     shape: object             # the TopoDS sub-shape (exact distance source)
-    info: str                 # human label (coords / length / area)
+    info: str                 # human label (coords / length / area / radius)
+    direction: tuple = None   # unit dir (line edge / plane normal / axis)
+    radius: float = None      # circular edge or cylindrical face radius
+
+
+@dataclass
+class ShapeProperties:
+    """Exact mass/size properties of the whole B-rep (OpenCASCADE)."""
+    ok: bool = False
+    is_solid: bool = False
+    volume: float = 0.0
+    area: float = 0.0
+    com: tuple = (0.0, 0.0, 0.0)          # centre of mass
+    bbox_min: tuple = (0.0, 0.0, 0.0)
+    bbox_max: tuple = (0.0, 0.0, 0.0)
+
+    @property
+    def bbox_size(self) -> tuple:
+        return (self.bbox_max[0] - self.bbox_min[0],
+                self.bbox_max[1] - self.bbox_min[1],
+                self.bbox_max[2] - self.bbox_min[2])
 
 
 @dataclass
@@ -137,6 +169,7 @@ class MeasureResult:
     distance: float = 0.0
     p1: tuple = (0.0, 0.0, 0.0)     # closest point on shape A
     p2: tuple = (0.0, 0.0, 0.0)     # closest point on shape B
+    angle: float = None            # degrees, when both picks are directional
     error: str = ""
 
     @property
@@ -172,6 +205,7 @@ class OccResult:
     mesh: ShadedMesh = field(default_factory=ShadedMesh)
     acc: OccAccounting = field(default_factory=OccAccounting)
     pick: PickModel = field(default_factory=PickModel)
+    props: ShapeProperties = field(default_factory=ShapeProperties)
 
 
 def available() -> bool:
@@ -295,13 +329,39 @@ def load_and_mesh(path: str, lin_deflection: float = 0.0,
     acc.nodes = len(mesh.vertices)
 
     pick = _build_pick(shape, face_shapes, m)
+    props = _properties(shape, m)
 
     if mesh.empty:
         return OccResult(ok=False,
                          error="OpenCASCADE read the file but produced no "
                                "triangulated surfaces (no solid/shell B-rep "
-                               "to mesh).", mesh=mesh, acc=acc)
-    return OccResult(ok=True, mesh=mesh, acc=acc, pick=pick)
+                               "to mesh).", mesh=mesh, acc=acc, props=props)
+    return OccResult(ok=True, mesh=mesh, acc=acc, pick=pick, props=props)
+
+
+def _properties(shape, m) -> ShapeProperties:
+    """Exact volume / area / centre-of-mass / bounding box of the shape."""
+    p = ShapeProperties()
+    try:
+        gs = m["GProp_GProps"]()
+        m["brepgprop"].SurfaceProperties(shape, gs)
+        p.area = float(gs.Mass())
+        n_solids = _count(shape, m["TopAbs_SOLID"], m["TopExp_Explorer"])
+        p.is_solid = n_solids > 0
+        gv = m["GProp_GProps"]()
+        m["brepgprop"].VolumeProperties(shape, gv)
+        p.volume = float(gv.Mass())
+        c = gv.CentreOfMass() if p.is_solid else gs.CentreOfMass()
+        p.com = (c.X(), c.Y(), c.Z())
+        box = m["Bnd_Box"]()
+        m["brepbndlib"].Add(shape, box)
+        x0, y0, z0, x1, y1, z1 = box.Get()
+        p.bbox_min = (x0, y0, z0)
+        p.bbox_max = (x1, y1, z1)
+        p.ok = True
+    except Exception:
+        p.ok = False
+    return p
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +396,9 @@ def _build_pick(shape, face_shapes, m) -> PickModel:
             info = f"area {g.Mass():.4g}"
         except Exception:
             info = "face"
-        pm.faces.append(PickShape("face", i, np.empty((0, 3)), face, info))
+        direction, radius, extra = _surface_dir_radius(face, m)
+        pm.faces.append(PickShape("face", i, np.empty((0, 3)), face,
+                                  info + extra, direction, radius))
 
     # unique vertices
     vmap = IndexedMap()
@@ -363,11 +425,52 @@ def _build_pick(shape, face_shapes, m) -> PickModel:
             try:
                 g = GProp()
                 brepgprop.LinearProperties(edge, g)
-                info = f"length {g.Mass():.4g}"
+                length = g.Mass()
             except Exception:
-                info = "edge"
-            pm.edges.append(PickShape("edge", len(pm.edges), pts, edge, info))
+                length = 0.0
+            direction, radius, info = _curve_dir_radius(edge, length, m)
+            pm.edges.append(PickShape("edge", len(pm.edges), pts, edge, info,
+                                      direction, radius))
     return pm
+
+
+def _curve_dir_radius(edge, length, m):
+    """Return (direction, radius, info) for an edge from its curve type."""
+    try:
+        ad = m["BRepAdaptor_Curve"](edge)
+        t = ad.GetType()
+        if t == m["GeomAbs_Line"]:
+            d = ad.Line().Direction()
+            return ((d.X(), d.Y(), d.Z()), None,
+                    f"line, length {length:.4g}")
+        if t == m["GeomAbs_Circle"]:
+            circ = ad.Circle()
+            r = circ.Radius()
+            ax = circ.Axis().Direction()
+            return ((ax.X(), ax.Y(), ax.Z()), r,
+                    f"circle r={r:.4g} (⌀{2 * r:.4g}), len {length:.4g}")
+    except Exception:
+        pass
+    return (None, None, f"length {length:.4g}")
+
+
+def _surface_dir_radius(face, m):
+    """Return (direction, radius, extra_info) for a face from its surface."""
+    try:
+        ad = m["BRepAdaptor_Surface"](face)
+        t = ad.GetType()
+        if t == m["GeomAbs_Plane"]:
+            n = ad.Plane().Axis().Direction()
+            return ((n.X(), n.Y(), n.Z()), None, ", planar")
+        if t == m["GeomAbs_Cylinder"]:
+            cyl = ad.Cylinder()
+            r = cyl.Radius()
+            ax = cyl.Axis().Direction()
+            return ((ax.X(), ax.Y(), ax.Z()), r,
+                    f", cylinder r={r:.4g} (⌀{2 * r:.4g})")
+    except Exception:
+        pass
+    return (None, None, "")
 
 
 def _discretize_edge(edge, m):
@@ -400,9 +503,24 @@ def measure(pa: PickShape, pb: PickShape) -> MeasureResult:
         return MeasureResult(
             True, kind_a=pa.kind, kind_b=pb.kind, info_a=pa.info,
             info_b=pb.info, distance=float(ext.Value()),
-            p1=(p1.X(), p1.Y(), p1.Z()), p2=(p2.X(), p2.Y(), p2.Z()))
+            p1=(p1.X(), p1.Y(), p1.Z()), p2=(p2.X(), p2.Y(), p2.Z()),
+            angle=_angle_between(pa.direction, pb.direction))
     except Exception as e:
         return MeasureResult(False, error=str(e))
+
+
+def _angle_between(da, db):
+    """Angle in degrees (0-90) between two directions, or None."""
+    if not da or not db:
+        return None
+    a = np.array(da, dtype=float)
+    b = np.array(db, dtype=float)
+    na = np.linalg.norm(a)
+    nb = np.linalg.norm(b)
+    if na == 0 or nb == 0:
+        return None
+    cos = abs(float(np.dot(a, b)) / (na * nb))
+    return float(np.degrees(np.arccos(min(1.0, max(0.0, cos)))))
 
 
 def _count(shape, typ, TopExp_Explorer) -> int:
